@@ -1,0 +1,16 @@
+[
+  {
+    "name": "HISAT2",
+    "path": "/bin/hisat2/hisat2-align-s.exe",
+    "build_path": "/bin/hisat2/hisat2-build-s.exe"
+  },
+  {
+    "name": "FeatureCounts",
+    "path": "/bin/subread/bin/featureCounts.exe"
+  },
+  {
+    "name": "samtools",
+    "path": "/bin/samtools/samtools.exe"
+  }
+]
+
