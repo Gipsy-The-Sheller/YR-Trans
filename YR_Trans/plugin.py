@@ -192,8 +192,9 @@ class HISAT2_wrapper(QWidget):
         # Index file
         index_layout = QHBoxLayout()
         self.index_path_edit = QLineEdit()
+        self.index_path_edit.setPlaceholderText("Select any HISAT2 index file or enter index prefix")
         self.index_path_btn = QPushButton("Browse")
-        self.index_path_btn.clicked.connect(lambda: self.browse_file(self.index_path_edit, "Index files (*)"))
+        self.index_path_btn.clicked.connect(self.browse_index_file)
         index_layout.addWidget(self.index_path_edit)
         index_layout.addWidget(self.index_path_btn)
         input_layout.addRow("Index prefix:", index_layout)
@@ -285,6 +286,40 @@ class HISAT2_wrapper(QWidget):
         
         main_layout.addLayout(control_layout)
         
+    def browse_index_file(self):
+        """Browse HISAT2 index files"""
+        file_path, _ = QFileDialog.getOpenFileName(self, "Select HISAT2 Index File", "", 
+                                                   "HISAT2 Index Files (*.ht2 *.ht1);;All files (*)")
+        if file_path:
+            # Extract the index prefix by removing the .N.ht2 or .N.ht1 suffix
+            index_prefix = self.extract_index_prefix(file_path)
+            self.index_path_edit.setText(index_prefix)
+            
+    def extract_index_prefix(self, file_path):
+        """
+        Extract the index prefix from a HISAT2 index file path.
+        HISAT2 index files are named like: prefix.1.ht2, prefix.2.ht2, etc.
+        We need to remove the .N.ht2 or .N.ht1 suffix to get the prefix.
+        """
+        # Get the file name without directory
+        file_name = os.path.basename(file_path)
+        
+        # Check if it's a HISAT2 index file (.N.ht2 or .N.ht1)
+        import re
+        # Pattern to match suffixes like .1.ht2, .2.ht2, .1.ht1, .2.ht1, etc.
+        pattern = r'\.\d+\.ht[12]$'
+        match = re.search(pattern, file_name)
+        
+        if match:
+            # Extract the prefix by removing the suffix
+            prefix = file_name[:match.start()]
+            # Return the full path with the prefix
+            dir_path = os.path.dirname(file_path)
+            return os.path.join(dir_path, prefix)
+        else:
+            # If it doesn't match the pattern, return the file path without extension
+            return os.path.splitext(file_path)[0]
+            
     def browse_file(self, line_edit, filter_str):
         file_path, _ = QFileDialog.getOpenFileName(self, "Select File", "", filter_str)
         if file_path:
@@ -1239,6 +1274,7 @@ class PyDESeq2_wrapper(QWidget):
         self.plugin_path = plugin_path or os.path.dirname(os.path.abspath(__file__))
         self.is_running = False
         self.count_data = None
+        self.current_design_df = None
         self.init_ui()
         
     def init_ui(self):
@@ -1361,12 +1397,6 @@ class PyDESeq2_wrapper(QWidget):
         layout = QVBoxLayout()
         self.results_tab.setLayout(layout)
         
-        # Results table
-        self.results_table = QTableWidget()
-        self.results_table.setAlternatingRowColors(True)
-        self.results_table.setSortingEnabled(True)
-        layout.addWidget(self.results_table)
-        
         # Summary label
         self.summary_label = QLabel("Results will be displayed here after analysis.")
         self.summary_label.setWordWrap(True)
@@ -1470,10 +1500,13 @@ class PyDESeq2_wrapper(QWidget):
         self.analysis_thread.error.connect(self.analysis_error)
         self.analysis_thread.start()
         
-    def analysis_finished(self, results_df):
+    def analysis_finished(self, results_df, design_df):
         self.is_running = False
         self.run_button.setEnabled(True)
         self.progress_bar.setVisible(False)
+        
+        # Store design_df for later use
+        self.current_design_df = design_df
         
         # Display results
         self.display_results(results_df)
@@ -1481,17 +1514,122 @@ class PyDESeq2_wrapper(QWidget):
         QMessageBox.information(self, "Success", "Analysis completed successfully!")
         
     def display_results(self, results_df):
-        """Display results in table"""
+        """Display results in table or DEGs distribution plot"""
         try:
+            # Check if matplotlib is available
+            if not MATPLOTLIB_AVAILABLE:
+                self.display_results_table(results_df)
+                return
+                
+            # Check if we have design information
+            if not hasattr(self, 'current_design_df'):
+                self.display_results_table(results_df)
+                return
+                
+            # Extract conditions from design matrix
+            conditions = list(set(self.current_design_df["condition"]))
+            
+            # Generate all pairwise comparisons
+            comparisons = []
+            for i in range(len(conditions)):
+                for j in range(i + 1, len(conditions)):
+                    comparisons.append((conditions[i], conditions[j]))
+            
+            # If we don't have comparison column, just show table
+            if 'comparison' not in results_df.columns:
+                self.display_results_table(results_df)
+                return
+            
+            # Prepare data for plotting
+            up_regulated = []
+            down_regulated = []
+            comparison_labels = []
+            
+            for cond1, cond2 in comparisons:
+                comparison_name = f"{cond1}_vs_{cond2}"
+                # Filter results for this comparison
+                comp_results = results_df[results_df['comparison'] == comparison_name]
+                
+                # Filter significant genes with log2FoldChange > 0 (up-regulated) and < 0 (down-regulated)
+                sig_genes = comp_results[comp_results['padj'] < self.alpha_spin.value()]
+                up_count = len(sig_genes[sig_genes['log2FoldChange'] > 0])
+                down_count = len(sig_genes[sig_genes['log2FoldChange'] < 0])
+                
+                up_regulated.append(up_count)
+                down_regulated.append(down_count)
+                comparison_labels.append(f"{cond1} vs {cond2}")
+            
+            # Create the plot
+            self.figure = Figure(figsize=(12, 8))
+            ax = self.figure.add_subplot(111)
+            
+            # Define colors
+            up_color = '#ba3e45'  # Red for up-regulated
+            down_color = '#4e6691'  # Blue for down-regulated
+            
+            # Plot bars
+            x_pos = np.arange(len(comparison_labels))
+            bar_width = 0.35
+            
+            bars_up = ax.bar(x_pos - bar_width/2, up_regulated, bar_width, color=up_color, label='Up-regulated')
+            bars_down = ax.bar(x_pos + bar_width/2, down_regulated, bar_width, color=down_color, label='Down-regulated')
+            
+            # Add value labels on top of bars
+            for i, (up_val, down_val) in enumerate(zip(up_regulated, down_regulated)):
+                ax.text(i - bar_width/2, up_val + max(up_regulated + [1])*0.01, str(up_val), ha='center', va='bottom', fontsize=10)
+                ax.text(i + bar_width/2, down_val + max(down_regulated + [1])*0.01, str(down_val), ha='center', va='bottom', fontsize=10)
+            
+            # Customize the plot
+            ax.set_xlabel('Comparison Groups')
+            ax.set_ylabel('Number of Differentially Expressed Genes')
+            ax.set_title('Distribution of DEGs across All Pairwise Comparisons')
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels(comparison_labels, rotation=45, ha='right')
+            ax.legend()
+            ax.grid(axis='y', alpha=0.3)
+            
+            # Adjust layout to prevent label cutoff
+            self.figure.tight_layout()
+            
+            # Display the plot
+            canvas = FigureCanvas(self.figure)
+            layout = self.results_tab.layout()
+            # Remove previous widgets
+            for i in reversed(range(layout.count())): 
+                layout.itemAt(i).widget().setParent(None)
+            layout.addWidget(canvas)
+            
+            # Also show summary info
+            total_sig = sum(up_regulated) + sum(down_regulated)
+            summary = f"Total significant genes across all comparisons: {total_sig}\n"
+            summary += f"Significant genes threshold (padj < {self.alpha_spin.value()}): {len(results_df[results_df['padj'] < self.alpha_spin.value()])}"
+            self.summary_label.setText(summary)
+            
+        except Exception as e:
+            QMessageBox.warning(self, "Warning", f"Could not display results: {e}")
+            self.display_results_table(results_df)
+    
+    def display_results_table(self, results_df):
+        """Fallback method to display results in table format"""
+        try:
+            # Clear existing layout
+            layout = self.results_tab.layout()
+            for i in reversed(range(layout.count())): 
+                layout.itemAt(i).widget().setParent(None)
+                
+            # Add table widget
+            self.results_table = QTableWidget()
+            self.results_table.setAlternatingRowColors(True)
+            self.results_table.setSortingEnabled(True)
+            layout.addWidget(self.results_table)
+            
             self.results_table.setRowCount(len(results_df))
             self.results_table.setColumnCount(len(results_df.columns))
             self.results_table.setHorizontalHeaderLabels(results_df.columns.tolist())
             
-            for i, (idx, row) in enumerate(results_df.iterrows()):
-                # First column: gene ID
-                self.results_table.setItem(i, 0, QTableWidgetItem(str(idx)))
-                # Other columns
-                for j, (col, val) in enumerate(row.items(), 1):
+            for i, row in results_df.iterrows():
+                # All columns including gene names
+                for j, (col, val) in enumerate(row.items()):
                     item = QTableWidgetItem(str(val))
                     if isinstance(val, (int, float)):
                         item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
@@ -1519,7 +1657,7 @@ class PyDESeq2_wrapper(QWidget):
 
 class DESeq2AnalysisThread(QThread):
     progress = pyqtSignal(str)
-    finished = pyqtSignal(object)  # results DataFrame
+    finished = pyqtSignal(object, object)  # results DataFrame, design DataFrame
     error = pyqtSignal(str)
     
     def __init__(self, count_file, design, alpha, fc_threshold, output_file):
@@ -1556,27 +1694,72 @@ class DESeq2AnalysisThread(QThread):
             self.progress.emit("Running DESeq2 analysis...")
             
             # Create DESeq2 object and run analysis
-            # Note: This is a simplified example. Actual PyDESeq2 API may differ
-            # You'll need to adjust based on the actual PyDESeq2 library interface
-            dds = pydeseq2(count_matrix=count_df, 
-                          design_matrix=design_df,
-                          design_formula="~ condition")
+            # Use the correct PyDESeq2 API
+            from pydeseq2.dds import DeseqDataSet
+            from pydeseq2.ds import DeseqStats
+            
+            # Transpose count data to have samples as rows and genes as columns for PyDESeq2
+            counts_transposed = count_df.T
+            
+            # Create DeseqDataSet object
+            dds = DeseqDataSet(
+                counts=counts_transposed,
+                metadata=design_df,
+                design_factors="condition",
+                quiet=False
+            )
+            
+            # Run the differential expression analysis
             dds.deseq2()
             
-            self.progress.emit("Extracting results...")
-            results = dds.results(alpha=self.alpha)
+            # Get all unique conditions
+            conditions = list(set(design_df["condition"]))
             
-            # Filter by fold change if specified
-            if 'log2FoldChange' in results.columns and self.fc_threshold > 1.0:
-                results = results[
-                    (results['log2FoldChange'].abs() >= np.log2(self.fc_threshold))
-                ]
+            # If we have at least 2 conditions, perform pairwise comparisons
+            if len(conditions) >= 2:
+                # Create a list to store all comparison results
+                all_results = []
+                
+                # Perform all pairwise comparisons
+                for i in range(len(conditions)):
+                    for j in range(i + 1, len(conditions)):
+                        cond1 = conditions[i]
+                        cond2 = conditions[j]
+                        
+                        # Create contrast and get results
+                        stat_res = DeseqStats(dds, contrast=("condition", cond1, cond2))
+                        stat_res.summary()
+                        results = stat_res.results_df
+                        
+                        # Add comparison info to results
+                        results['comparison'] = f"{cond1}_vs_{cond2}"
+                        
+                        # Filter by fold change if specified
+                        if 'log2FoldChange' in results.columns and self.fc_threshold > 1.0:
+                            results = results[
+                                (results['log2FoldChange'].abs() >= np.log2(self.fc_threshold))
+                            ]
+                        
+                        all_results.append(results)
+                
+                # Combine all results
+                if all_results:
+                    combined_results = pd.concat(all_results, ignore_index=True)
+                else:
+                    # Fallback to default results if no comparisons worked
+                    combined_results = dds.summary()
+            else:
+                # If we can't make a proper contrast, just get the results
+                combined_results = dds.summary()
+            
+            # Reset index to make gene names a column
+            combined_results = combined_results.reset_index()
             
             # Save if output file specified
             if self.output_file:
-                results.to_csv(self.output_file, sep='\t')
+                combined_results.to_csv(self.output_file, sep='\t', index=False)
                 
-            self.finished.emit(results)
+            self.finished.emit(combined_results, design_df)
             
         except Exception as e:
             import traceback
