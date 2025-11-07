@@ -198,22 +198,24 @@ class HISAT2_wrapper(QWidget):
         index_layout.addWidget(self.index_path_btn)
         input_layout.addRow("Index prefix:", index_layout)
         
-        # Reads files
-        reads_layout = QHBoxLayout()
-        self.reads1_edit = QLineEdit()
-        self.reads1_btn = QPushButton("Browse R1")
-        self.reads1_btn.clicked.connect(lambda: self.browse_file(self.reads1_edit, "FastQ files (*.fq *.fastq *.fq.gz *.fastq.gz)"))
-        reads_layout.addWidget(self.reads1_edit)
-        reads_layout.addWidget(self.reads1_btn)
-        input_layout.addRow("Reads 1 (R1):", reads_layout)
+        # Multiple reads files
+        reads_group = QGroupBox("Reads Files (Support multiple samples)")
+        reads_layout = QVBoxLayout()
+        reads_group.setLayout(reads_layout)
         
-        reads2_layout = QHBoxLayout()
-        self.reads2_edit = QLineEdit()
-        self.reads2_btn = QPushButton("Browse R2")
-        self.reads2_btn.clicked.connect(lambda: self.browse_file(self.reads2_edit, "FastQ files (*.fq *.fastq *.fq.gz *.fastq.gz)"))
-        reads2_layout.addWidget(self.reads2_edit)
-        reads2_layout.addWidget(self.reads2_btn)
-        input_layout.addRow("Reads 2 (R2, optional):", reads2_layout)
+        # Add file tags container for multiple samples
+        self.reads_tags_container = QFrame()
+        self.reads_tags_layout = QVBoxLayout()
+        self.reads_tags_container.setLayout(self.reads_tags_layout)
+        self.reads_tags_container.setVisible(False)
+        reads_layout.addWidget(self.reads_tags_container)
+        
+        # Button to add reads files
+        add_reads_btn = QPushButton("Add Reads Files")
+        add_reads_btn.clicked.connect(self.add_reads_files)
+        reads_layout.addWidget(add_reads_btn)
+        
+        input_layout.addRow(reads_group)
         
         layout.addWidget(input_group)
         
@@ -228,15 +230,15 @@ class HISAT2_wrapper(QWidget):
         self.threads_spin.setValue(4)
         params_layout.addRow("Threads (-p):", self.threads_spin)
         
-        # Output file
+        # Output directory
         output_layout = QHBoxLayout()
-        self.output_bam_edit = QLineEdit()
-        self.output_bam_edit.setPlaceholderText("Output BAM file")
-        self.output_bam_btn = QPushButton("Browse")
-        self.output_bam_btn.clicked.connect(lambda: self.save_file(self.output_bam_edit, "BAM files (*.bam)"))
-        output_layout.addWidget(self.output_bam_edit)
-        output_layout.addWidget(self.output_bam_btn)
-        params_layout.addRow("Output BAM:", output_layout)
+        self.output_dir_edit = QLineEdit()
+        self.output_dir_edit.setPlaceholderText("Select output directory for BAM files")
+        self.output_dir_btn = QPushButton("Browse")
+        self.output_dir_btn.clicked.connect(self.browse_output_dir)
+        output_layout.addWidget(self.output_dir_edit)
+        output_layout.addWidget(self.output_dir_btn)
+        params_layout.addRow("Output Directory:", output_layout)
         
         layout.addWidget(params_group)
         layout.addStretch()
@@ -288,11 +290,11 @@ class HISAT2_wrapper(QWidget):
         if file_path:
             line_edit.setText(file_path)
             
-    def save_file(self, line_edit, filter_str):
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save File", "", filter_str)
-        if file_path:
-            line_edit.setText(file_path)
-    
+    def browse_output_dir(self):
+        dir_path = QFileDialog.getExistingDirectory(self, "Select Output Directory")
+        if dir_path:
+            self.output_dir_edit.setText(dir_path)
+            
     def clear_console(self):
         self.console_text.clear()
         
@@ -309,6 +311,154 @@ class HISAT2_wrapper(QWidget):
         self.console_text.appendPlainText(formatted)
         self.console_text.moveCursor(QTextCursor.End)
         
+    def add_reads_files(self):
+        """Add multiple reads files (paired-end or single-end)"""
+        # Create dialog for adding reads files
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Add Reads Files")
+        dialog.setMinimumSize(500, 300)
+        layout = QVBoxLayout()
+        dialog.setLayout(layout)
+        
+        # R1 file
+        r1_layout = QHBoxLayout()
+        r1_layout.addWidget(QLabel("Reads 1 (R1):"))
+        r1_edit = QLineEdit()
+        r1_btn = QPushButton("Browse")
+        r1_btn.clicked.connect(lambda: self.browse_file(r1_edit, "FastQ files (*.fq *.fastq *.fq.gz *.fastq.gz)"))
+        r1_layout.addWidget(r1_edit)
+        r1_layout.addWidget(r1_btn)
+        layout.addLayout(r1_layout)
+        
+        # R2 file (optional)
+        r2_layout = QHBoxLayout()
+        r2_layout.addWidget(QLabel("Reads 2 (R2):"))
+        r2_edit = QLineEdit()
+        r2_btn = QPushButton("Browse")
+        r2_btn.clicked.connect(lambda: self.browse_file(r2_edit, "FastQ files (*.fq *.fastq *.fq.gz *.fastq.gz)"))
+        r2_layout.addWidget(r2_edit)
+        r2_layout.addWidget(r2_btn)
+        layout.addLayout(r2_layout)
+        
+        # Sample name
+        name_layout = QHBoxLayout()
+        name_layout.addWidget(QLabel("Sample Name:"))
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("e.g., sample1")
+        name_layout.addWidget(name_edit)
+        layout.addLayout(name_layout)
+        
+        # Dialog buttons
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("Add")
+        cancel_btn = QPushButton("Cancel")
+        btn_layout.addStretch()
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+        
+        ok_btn.clicked.connect(dialog.accept)
+        cancel_btn.clicked.connect(dialog.reject)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            r1_file = r1_edit.text()
+            r2_file = r2_edit.text()
+            sample_name = name_edit.text()
+            
+            if not r1_file:
+                QMessageBox.warning(self, "Warning", "Please select R1 reads file!")
+                return
+                
+            if not sample_name:
+                QMessageBox.warning(self, "Warning", "Please specify a sample name!")
+                return
+                
+            # Add file tag for this sample
+            self.add_reads_tag(r1_file, r2_file, sample_name)
+            
+    def add_reads_tag(self, r1_file, r2_file, sample_name):
+        """Add a tag widget for a sample's reads files"""
+        if not hasattr(self, 'reads_samples'):
+            self.reads_samples = []
+            
+        # Store sample info
+        sample_info = {
+            'r1': r1_file,
+            'r2': r2_file if r2_file else None,
+            'name': sample_name
+        }
+        self.reads_samples.append(sample_info)
+        
+        # Create tag widget
+        tag_widget = QFrame()
+        tag_widget.setFrameStyle(QFrame.Box)
+        tag_widget.setStyleSheet("""
+            QFrame {
+                background-color: #e9ecef;
+                border-radius: 15px;
+                margin: 2px;
+            }
+        """)
+        
+        tag_layout = QHBoxLayout()
+        tag_layout.setContentsMargins(8, 4, 8, 4)
+        tag_widget.setLayout(tag_layout)
+        
+        # Sample info label
+        if sample_info['r2']:
+            info_text = f"{sample_name}: {os.path.basename(r1_file)} + {os.path.basename(r2_file)}"
+        else:
+            info_text = f"{sample_name}: {os.path.basename(r1_file)}"
+            
+        info_label = QLabel(info_text)
+        info_label.setStyleSheet("color: #495057;")
+        tag_layout.addWidget(info_label)
+        
+        # Close button
+        close_btn = QPushButton("×")
+        close_btn.setFixedSize(20, 20)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #dc3545;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #c82333;
+            }
+        """)
+        close_btn.clicked.connect(lambda: self.remove_reads_tag(sample_info, tag_widget))
+        tag_layout.addWidget(close_btn)
+        
+        # Add to layout
+        self.reads_tags_layout.addWidget(tag_widget)
+        if not hasattr(self, 'reads_tags'):
+            self.reads_tags = []
+        self.reads_tags.append((sample_info, tag_widget))
+        
+        # Show container
+        self.reads_tags_container.setVisible(True)
+        
+    def remove_reads_tag(self, sample_info, tag_widget):
+        """Remove a reads tag"""
+        if hasattr(self, 'reads_samples') and sample_info in self.reads_samples:
+            self.reads_samples.remove(sample_info)
+        
+        # Remove from tags list
+        if hasattr(self, 'reads_tags'):
+            self.reads_tags = [(si, tw) for si, tw in self.reads_tags if si != sample_info]
+        
+        # Remove widget
+        self.reads_tags_layout.removeWidget(tag_widget)
+        tag_widget.deleteLater()
+        
+        # Hide container if no samples left
+        if not hasattr(self, 'reads_samples') or not self.reads_samples:
+            self.reads_tags_container.setVisible(False)
+            
     def run_command(self):
         if self.is_running:
             return
@@ -360,12 +510,16 @@ class HISAT2_wrapper(QWidget):
             QMessageBox.warning(self, "Error", "Please select an index file!")
             return
             
-        if not self.reads1_edit.text() or not os.path.exists(self.reads1_edit.text()):
-            QMessageBox.warning(self, "Error", "Please select valid reads file(s)!")
+        if not hasattr(self, 'reads_samples') or not self.reads_samples:
+            QMessageBox.warning(self, "Error", "Please add at least one sample with reads files!")
             return
             
-        if not self.output_bam_edit.text():
-            QMessageBox.warning(self, "Error", "Please specify output BAM file!")
+        if not self.output_dir_edit.text():
+            QMessageBox.warning(self, "Error", "Please specify output directory!")
+            return
+            
+        if not os.path.exists(self.output_dir_edit.text()):
+            QMessageBox.warning(self, "Error", "Output directory does not exist!")
             return
             
         if not self.tool_path or not os.path.exists(self.tool_path):
@@ -382,6 +536,24 @@ class HISAT2_wrapper(QWidget):
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
         
+        # Run alignment for each sample
+        self.sample_index = 0
+        self.total_samples = len(self.reads_samples)
+        self.align_next_sample()
+        
+    def align_next_sample(self):
+        """Align next sample in the list"""
+        if self.sample_index >= self.total_samples:
+            # All samples processed
+            self.command_finished("All samples aligned successfully")
+            return
+            
+        sample = self.reads_samples[self.sample_index]
+        self.progress_bar.setFormat(f"Processing sample {self.sample_index+1}/{self.total_samples}: {sample['name']}")
+        
+        # Create output BAM file path
+        output_bam = os.path.join(self.output_dir_edit.text(), f"{sample['name']}.bam")
+        
         cmd = [
             self.tool_path,
             "-x", self.index_path_edit.text().replace("\\", "/"),
@@ -389,14 +561,13 @@ class HISAT2_wrapper(QWidget):
         ]
         
         # Add reads
-        reads2 = self.reads2_edit.text().replace("\\", "/")
-        if reads2 and os.path.exists(reads2):
-            cmd.extend(["-1", self.reads1_edit.text().replace("\\", "/"), "-2", reads2.replace("\\", "/")])
+        if sample['r2'] and os.path.exists(sample['r2']):
+            cmd.extend(["-1", sample['r1'].replace("\\", "/"), "-2", sample['r2'].replace("\\", "/")])
         else:
-            cmd.extend(["-U", self.reads1_edit.text().replace("\\", "/")])
+            cmd.extend(["-U", sample['r1'].replace("\\", "/")])
         
-        # 生成SAM文件而不是直接管道传输
-        temp_sam = self.output_bam_edit.text().replace(".bam", ".sam")
+        # Generate SAM file
+        temp_sam = os.path.join(self.output_dir_edit.text(), f"{sample['name']}.sam")
         cmd.extend([
             "-S",
             temp_sam
@@ -405,28 +576,17 @@ class HISAT2_wrapper(QWidget):
         self.add_console_message(" ".join(cmd), "command")
         self.tab_widget.setCurrentIndex(2)
         
-        self.align_thread = AlignThread(cmd)
+        self.align_thread = AlignThread(cmd, temp_sam, self.samtools_path, output_bam)
         self.align_thread.progress.connect(self.progress_bar.setFormat)
         self.align_thread.error.connect(self.command_error)
         self.align_thread.console_output.connect(self.add_console_message)
+        self.align_thread.finished.connect(lambda: self.samtools_finished(output_bam))
         self.align_thread.start()
         
-        # 构建正确的samtools命令
-        samtools_cmd = [
-            self.samtools_path,
-            "view",
-            "-bS",
-            temp_sam,
-            "-o",
-            self.output_bam_edit.text()
-        ]
-
-        self.add_console_message(" ".join(samtools_cmd), "command")
-        self.samtools_thread = SamtoolsThread(samtools_cmd)  
-
-        self.align_thread.finished.connect(self.samtools_thread.start)
-        # 修复信号连接，确保传递正确的参数给command_finished
-        self.samtools_thread.finished.connect(lambda x: self.command_finished(self.output_bam_edit.text()))
+    def samtools_finished(self, output_bam):
+        """Called when samtools conversion is finished for a sample"""
+        self.sample_index += 1
+        self.align_next_sample()
         
     def command_finished(self, output_file):
         self.is_running = False
@@ -492,49 +652,18 @@ class BuildIndexThread(QThread):
             self.error.emit(str(e))
 
 
-class SamtoolsThread(QThread):
-    progress = pyqtSignal(str)
-    finished = pyqtSignal(str)
-    error = pyqtSignal(str)
-    console_output = pyqtSignal(str, str)
-    
-    def __init__(self, cmd):
-        super().__init__()
-        self.cmd = cmd
-        
-    def run(self):
-        try:
-            self.progress.emit("Converting SAM to BAM...")
-            # 修复编码问题，显式指定编码为utf-8，并处理可能的错误
-            result = subprocess.run(self.cmd, capture_output=True, text=True, timeout=3600, encoding='utf-8', errors='ignore')
-            if result.stdout:
-                for line in result.stdout.strip().split('\n'):
-                    if line.strip():
-                        self.console_output.emit(line.strip(), "output")
-            if result.stderr:
-                for line in result.stderr.strip().split('\n'):
-                    if line.strip():
-                        self.console_output.emit(line.strip(), "error" if result.returncode != 0 else "output")
-                        
-            if result.returncode != 0:
-                self.error.emit(result.stderr or "Samtools conversion failed")
-            else:
-                self.finished.emit("Conversion completed successfully")
-        except subprocess.TimeoutExpired:
-            self.error.emit("Operation timed out")
-        except Exception as e:
-            self.error.emit(str(e))
-
-
 class AlignThread(QThread):
     progress = pyqtSignal(str)
-    finished = pyqtSignal(str)
+    finished = pyqtSignal()
     error = pyqtSignal(str)
     console_output = pyqtSignal(str, str)
     
-    def __init__(self, cmd):
+    def __init__(self, cmd, temp_sam, samtools_path, output_bam):
         super().__init__()
         self.cmd = cmd
+        self.temp_sam = temp_sam
+        self.samtools_path = samtools_path
+        self.output_bam = output_bam
         
     def run(self):
         try:
@@ -552,8 +681,40 @@ class AlignThread(QThread):
                         
             if result.returncode != 0:
                 self.error.emit(result.stderr)
+                return
+                
+            # Run samtools to convert SAM to BAM
+            self.progress.emit("Converting SAM to BAM...")
+            samtools_cmd = [
+                self.samtools_path,
+                "view",
+                "-bS",
+                self.temp_sam,
+                "-o",
+                self.output_bam
+            ]
+            
+            samtools_result = subprocess.run(samtools_cmd, capture_output=True, text=True, encoding='utf-8', errors='ignore')
+            
+            if samtools_result.stdout:
+                for line in samtools_result.stdout.strip().split('\n'):
+                    if line.strip():
+                        self.console_output.emit(line.strip(), "output")
+            if samtools_result.stderr:
+                for line in samtools_result.stderr.strip().split('\n'):
+                    if line.strip():
+                        self.console_output.emit(line.strip(), "error" if samtools_result.returncode != 0 else "output")
+            
+            # Clean up temp SAM file
+            try:
+                os.remove(self.temp_sam)
+            except:
+                pass
+                
+            if samtools_result.returncode != 0:
+                self.error.emit(samtools_result.stderr or "Samtools conversion failed")
             else:
-                self.finished.emit("Alignment completed successfully")
+                self.finished.emit()
         except subprocess.TimeoutExpired:
             self.error.emit("Operation timed out")
         except Exception as e:
@@ -646,15 +807,24 @@ class FeatureCounts_wrapper(QWidget):
         anno_layout.addWidget(self.anno_file_btn)
         input_layout.addRow("Annotation file:", anno_layout)
         
-        # BAM/SAM files
-        bam_layout = QHBoxLayout()
-        self.bam_files_edit = QLineEdit()
-        self.bam_files_edit.setPlaceholderText("Select BAM/SAM files...")
-        self.bam_files_btn = QPushButton("Browse")
-        self.bam_files_btn.clicked.connect(self.browse_bam_files)
-        bam_layout.addWidget(self.bam_files_edit)
-        bam_layout.addWidget(self.bam_files_btn)
-        input_layout.addRow("BAM/SAM files:", bam_layout)
+        # BAM/SAM files with multi-file support
+        bam_group = QGroupBox("BAM/SAM Files (Support multiple samples)")
+        bam_layout = QVBoxLayout()
+        bam_group.setLayout(bam_layout)
+        
+        # Add file tags container for multiple BAM/SAM files
+        self.bam_tags_container = QFrame()
+        self.bam_tags_layout = QVBoxLayout()
+        self.bam_tags_container.setLayout(self.bam_tags_layout)
+        self.bam_tags_container.setVisible(False)
+        bam_layout.addWidget(self.bam_tags_container)
+        
+        # Button to add BAM/SAM files
+        add_bam_btn = QPushButton("Add BAM/SAM Files")
+        add_bam_btn.clicked.connect(self.browse_bam_files)
+        bam_layout.addWidget(add_bam_btn)
+        
+        input_layout.addRow(bam_group)
         
         layout.addWidget(input_group)
         
@@ -771,11 +941,12 @@ class FeatureCounts_wrapper(QWidget):
             line_edit.setText(file_path)
             
     def browse_bam_files(self):
+        """Browse and add multiple BAM/SAM files"""
         file_paths, _ = QFileDialog.getOpenFileNames(self, "Select BAM/SAM Files", "", 
                                                       "BAM files (*.bam);;SAM files (*.sam);;All files (*)")
         if file_paths:
-            self.bam_files_edit.setText(";".join(file_paths))
-            self.bam_files_edit.setToolTip("\n".join(file_paths))
+            for file_path in file_paths:
+                self.add_bam_tag(file_path)
             
     def save_file(self, line_edit, filter_str):
         file_path, _ = QFileDialog.getSaveFileName(self, "Save File", "", filter_str)
@@ -796,6 +967,84 @@ class FeatureCounts_wrapper(QWidget):
         self.console_text.appendPlainText(formatted)
         self.console_text.moveCursor(QTextCursor.End)
         
+    def add_bam_tag(self, file_path):
+        """Add a BAM/SAM file tag widget"""
+        if not hasattr(self, 'bam_files'):
+            self.bam_files = []
+            
+        if file_path in self.bam_files:
+            return  # Avoid duplicates
+            
+        self.bam_files.append(file_path)
+        
+        # Create tag widget
+        tag_widget = QFrame()
+        tag_widget.setFrameStyle(QFrame.Box)
+        tag_widget.setStyleSheet("""
+            QFrame {
+                background-color: #e9ecef;
+                border-radius: 15px;
+                margin: 2px;
+            }
+        """)
+        
+        tag_layout = QHBoxLayout()
+        tag_layout.setContentsMargins(8, 4, 8, 4)
+        tag_widget.setLayout(tag_layout)
+        
+        # Get display name
+        display_name = os.path.basename(file_path)
+        
+        # File name label
+        name_label = QLabel(display_name)
+        name_label.setStyleSheet("color: #495057;")
+        tag_layout.addWidget(name_label)
+        
+        # Close button
+        close_btn = QPushButton("×")
+        close_btn.setFixedSize(20, 20)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #dc3545;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #c82333;
+            }
+        """)
+        close_btn.clicked.connect(lambda: self.remove_bam_tag(file_path, tag_widget))
+        tag_layout.addWidget(close_btn)
+        
+        # Add to layout
+        self.bam_tags_layout.addWidget(tag_widget)
+        if not hasattr(self, 'bam_tags'):
+            self.bam_tags = []
+        self.bam_tags.append((file_path, tag_widget))
+        
+        # Show container
+        self.bam_tags_container.setVisible(True)
+        
+    def remove_bam_tag(self, file_path, tag_widget):
+        """Remove a BAM/SAM file tag"""
+        if hasattr(self, 'bam_files') and file_path in self.bam_files:
+            self.bam_files.remove(file_path)
+        
+        # Remove from tags list
+        if hasattr(self, 'bam_tags'):
+            self.bam_tags = [(fp, tw) for fp, tw in self.bam_tags if fp != file_path]
+        
+        # Remove widget
+        self.bam_tags_layout.removeWidget(tag_widget)
+        tag_widget.deleteLater()
+        
+        # Hide container if no files left
+        if not hasattr(self, 'bam_files') or not self.bam_files:
+            self.bam_tags_container.setVisible(False)
+            
     def run_command(self):
         if self.is_running:
             return
@@ -804,9 +1053,8 @@ class FeatureCounts_wrapper(QWidget):
             QMessageBox.warning(self, "Error", "Please select an annotation file!")
             return
             
-        bam_files_str = self.bam_files_edit.text()
-        if not bam_files_str:
-            QMessageBox.warning(self, "Error", "Please select BAM/SAM files!")
+        if not hasattr(self, 'bam_files') or not self.bam_files:
+            QMessageBox.warning(self, "Error", "Please add at least one BAM/SAM file!")
             return
             
         if not self.output_file_edit.text():
@@ -823,7 +1071,6 @@ class FeatureCounts_wrapper(QWidget):
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
         
-        bam_files = [f.strip() for f in bam_files_str.split(";") if f.strip()]
         cmd = [
             self.tool_path,
             "-a", self.anno_file_edit.text(),
@@ -833,7 +1080,9 @@ class FeatureCounts_wrapper(QWidget):
             "-o", self.output_file_edit.text(),
             "-p" if self.paired_end_radio.isChecked() else ""
         ]
-        cmd.extend(bam_files)
+        
+        # Add all BAM/SAM files
+        cmd.extend(self.bam_files)
         
         self.add_console_message(" ".join(cmd), "command")
         self.tab_widget.setCurrentIndex(2)
