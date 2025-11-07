@@ -87,6 +87,24 @@ class HISAT2_wrapper(QWidget):
         print(f"HISAT2 tool path: {self.tool_path}")
         print(f"HISAT2 build path: {self.build_path}")
 
+# ============================================================================
+# FeatureCounts Wrapper
+# ============================================================================
+
+class FeatureCounts_wrapper(QWidget):
+    """FeatureCounts wrapper for read counting"""
+    
+    def __init__(self, config=None, plugin_path=None):
+        super().__init__()
+        self.config = config
+        self.plugin_path = os.path.dirname(os.path.abspath(__file__))
+        self.tool_path = None
+        self.is_running = False
+        self.count_data = None  # To store count data for TPM/FPKM calculation
+        self.expr_buttons_added = False  # To track if expression buttons are added
+        self.load_config()
+        self.init_ui()
+
         self.init_ui()
         
     def load_config(self):
@@ -1149,7 +1167,7 @@ class FeatureCounts_wrapper(QWidget):
         """Load count results and display histogram"""
         try:
             # FeatureCounts output has comments at the beginning
-            with open(output_file, 'r') as f:
+            with open(output_file, 'r', encoding='utf-8', errors='ignore') as f:
                 lines = f.readlines()
             
             # Find the header line (starts with Geneid)
@@ -1160,7 +1178,10 @@ class FeatureCounts_wrapper(QWidget):
                     break
             
             # Read data starting from header
-            df = pd.read_csv(output_file, sep='\t', skiprows=header_idx, index_col=0)
+            df = pd.read_csv(output_file, sep='\t', skiprows=header_idx)
+            
+            # Store the dataframe for later use
+            self.count_data = df
             
             # Check if matplotlib is available
             if MATPLOTLIB_AVAILABLE:
@@ -1168,7 +1189,10 @@ class FeatureCounts_wrapper(QWidget):
                 self.figure.clear()
                 
                 # Calculate total counts per gene (sum across all samples)
-                total_counts_per_gene = df.iloc[:, :-4].sum(axis=1)  # Exclude last 4 columns (Length, EffectiveLength, etc.)
+                # Make sure we're working with numeric data
+                count_columns = df.columns[1:-4]  # Exclude first column (Geneid) and last 4 columns
+                numeric_data = df[count_columns].apply(pd.to_numeric, errors='coerce').fillna(0)
+                total_counts_per_gene = numeric_data.sum(axis=1)
                 
                 # Create histogram
                 ax = self.figure.add_subplot(111)
@@ -1196,9 +1220,208 @@ class FeatureCounts_wrapper(QWidget):
                         
                 self.results_table.resizeColumnsToContents()
             
+            # Add buttons for TPM/FPKM calculation if annotation file is available
+            self.add_expression_buttons()
+            
         except Exception as e:
-            QMessageBox.warning(self, "Warning", f"Could not load results: {e}")
+            QMessageBox.warning(self, "Warning", f"Could not load results: {str(e)}")
+    
+    def add_expression_buttons(self):
+        """Add buttons for TPM/FPKM calculation"""
+        # Check if we already have the buttons
+        if hasattr(self, 'expr_buttons_added') and self.expr_buttons_added:
+            return
+            
+        layout = self.results_tab.layout()
         
+        # Create a horizontal layout for expression calculation buttons
+        expr_layout = QHBoxLayout()
+        
+        # Add a separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(separator)
+        
+        # Add label
+        label = QLabel("Calculate expression values:")
+        expr_layout.addWidget(label)
+        
+        # Add TPM button
+        tpm_btn = QPushButton("Calculate TPM")
+        tpm_btn.clicked.connect(self.calculate_tpm)
+        expr_layout.addWidget(tpm_btn)
+        
+        # Add FPKM button
+        fpkm_btn = QPushButton("Calculate FPKM")
+        fpkm_btn.clicked.connect(self.calculate_fpkm)
+        expr_layout.addWidget(fpkm_btn)
+        
+        # Add layout to the results tab
+        layout.addLayout(expr_layout)
+        
+        # Mark that we've added the buttons
+        self.expr_buttons_added = True
+    
+    def calculate_tpm(self):
+        """Calculate TPM values based on count data and annotation file"""
+        if not hasattr(self, 'count_data') or self.count_data is None:
+            QMessageBox.warning(self, "Warning", "No count data available!")
+            return
+            
+        if not self.anno_file_edit.text() or not os.path.exists(self.anno_file_edit.text()):
+            QMessageBox.warning(self, "Warning", "Annotation file is required for TPM calculation!")
+            return
+            
+        try:
+            # Calculate TPM
+            tpm_df = self._calculate_expression_values("TPM")
+            
+            # Save to file
+            base_name = os.path.splitext(self.output_file_edit.text())[0]
+            tpm_file = f"{base_name}_tpm.txt"
+            
+            tpm_df.to_csv(tpm_file, sep='\t', index=False)
+            QMessageBox.information(self, "Success", f"TPM values saved to:\n{tpm_file}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to calculate TPM values:\n{str(e)}")
+    
+    def calculate_fpkm(self):
+        """Calculate FPKM values based on count data and annotation file"""
+        if not hasattr(self, 'count_data') or self.count_data is None:
+            QMessageBox.warning(self, "Warning", "No count data available!")
+            return
+            
+        if not self.anno_file_edit.text() or not os.path.exists(self.anno_file_edit.text()):
+            QMessageBox.warning(self, "Warning", "Annotation file is required for FPKM calculation!")
+            return
+            
+        try:
+            # Calculate FPKM
+            fpkm_df = self._calculate_expression_values("FPKM")
+            
+            # Save to file
+            base_name = os.path.splitext(self.output_file_edit.text())[0]
+            fpkm_file = f"{base_name}_fpkm.txt"
+            
+            fpkm_df.to_csv(fpkm_file, sep='\t', index=False)
+            QMessageBox.information(self, "Success", f"FPKM values saved to:\n{fpkm_file}")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to calculate FPKM values:\n{str(e)}")
+    
+    def _calculate_expression_values(self, expr_type):
+        """Calculate TPM or FPKM values"""
+        # Get gene lengths from annotation file (GTF format)
+        gene_lengths = self._get_gene_lengths_from_gtf()
+        
+        # Get count data (exclude Geneid column and last 4 columns)
+        count_columns = self.count_data.columns[1:-4]  # Sample columns
+        count_data = self.count_data[count_columns]
+        gene_ids = self.count_data.iloc[:, 0]  # Gene IDs
+        
+        # Ensure count_data contains only numeric values
+        count_data = count_data.apply(pd.to_numeric, errors='coerce').fillna(0)
+        
+        # Match gene lengths with count data
+        lengths = []
+        valid_genes = []
+        valid_count_data = []
+        
+        for i, gene_id in enumerate(gene_ids):
+            # Convert gene_id to string to match with gene_lengths keys
+            gene_id_str = str(gene_id)
+            if gene_id_str in gene_lengths:
+                lengths.append(gene_lengths[gene_id_str])
+                valid_genes.append(gene_id_str)
+                valid_count_data.append(count_data.iloc[i])
+        
+        if not valid_genes:
+            raise Exception("No matching genes found between count data and annotation file")
+        
+        lengths = np.array(lengths)
+        valid_count_data = pd.DataFrame(valid_count_data, columns=count_columns)
+        
+        # Calculate expression values
+        if expr_type == "TPM":
+            # TPM calculation:
+            # 1. Normalize counts by gene length (in kilobases) - RPK
+            # 2. Normalize RPK values by the sum of all RPKs (per million) - TPM
+            rpk = valid_count_data.div(lengths / 1000, axis=0)
+            tpm = rpk.div(rpk.sum(axis=0) / 1e6, axis=1)
+            result_df = tpm.copy()
+            result_df.insert(0, "Geneid", valid_genes)
+            
+        elif expr_type == "FPKM":
+            # FPKM calculation:
+            # 1. Normalize counts by gene length (in kilobases)
+            # 2. Normalize by total count (per million)
+            total_counts = count_data.sum(axis=0)  # Total counts per sample
+            rpk = valid_count_data.div(lengths / 1000, axis=0)
+            fpkm = rpk.div(total_counts / 1e6, axis=1)
+            result_df = fpkm.copy()
+            result_df.insert(0, "Geneid", valid_genes)
+            
+        return result_df
+    
+    def _get_gene_lengths_from_gtf(self):
+        """Extract gene lengths from GTF annotation file"""
+        gene_lengths = {}
+        
+        try:
+            with open(self.anno_file_edit.text(), 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if line.startswith('#'):
+                        continue  # Skip comment lines
+                        
+                    parts = line.strip().split('\t')
+                    if len(parts) < 9:
+                        continue  # Not a valid GTF line
+                        
+                    feature_type = parts[2]
+                    if feature_type != self.feature_type_combo.currentText():
+                        continue  # Only process selected feature type
+                        
+                    # Parse attributes column (column 9)
+                    attributes = parts[8]
+                    gene_id = None
+                    
+                    # Extract gene_id from attributes
+                    if 'gene_id' in attributes:
+                        # Handle different attribute formats
+                        if 'gene_id "' in attributes:
+                            # Format: gene_id "ENSG00000187634";
+                            gene_id_match = attributes.split('gene_id "')[1].split('";')[0]
+                            gene_id = gene_id_match
+                        else:
+                            # Format: gene_id ENSG00000187634;
+                            gene_id_match = attributes.split('gene_id ')[1].split(';')[0]
+                            gene_id = gene_id_match
+                    
+                    if not gene_id:
+                        continue
+                        
+                    # Calculate length of feature
+                    try:
+                        start = int(parts[3])
+                        end = int(parts[4])
+                        length = end - start + 1
+                        
+                        # For gene_id, sum up lengths of all exons (or other features)
+                        if gene_id in gene_lengths:
+                            gene_lengths[gene_id] += length
+                        else:
+                            gene_lengths[gene_id] = length
+                    except ValueError:
+                        # Skip lines with invalid coordinates
+                        continue
+                        
+        except Exception as e:
+            raise Exception(f"Failed to parse annotation file: {str(e)}")
+            
+        return gene_lengths
+
     def command_error(self, error_msg):
         self.is_running = False
         self.run_button.setEnabled(True)
@@ -1731,6 +1954,12 @@ class DESeq2AnalysisThread(QThread):
                         stat_res.summary()
                         results = stat_res.results_df
                         
+                        # Reset index to make gene names a column
+                        results = results.reset_index()
+                        # Rename the index column to 'geneid'
+                        if 'index' in results.columns:
+                            results = results.rename(columns={'index': 'geneid'})
+                        
                         # Add comparison info to results
                         results['comparison'] = f"{cond1}_vs_{cond2}"
                         
@@ -1747,13 +1976,27 @@ class DESeq2AnalysisThread(QThread):
                     combined_results = pd.concat(all_results, ignore_index=True)
                 else:
                     # Fallback to default results if no comparisons worked
-                    combined_results = dds.summary()
+                    results = dds.summary()
+                    combined_results = results.reset_index()
+                    if 'index' in combined_results.columns:
+                        combined_results = combined_results.rename(columns={'index': 'geneid'})
             else:
                 # If we can't make a proper contrast, just get the results
-                combined_results = dds.summary()
+                results = dds.summary()
+                combined_results = results.reset_index()
+                if 'index' in combined_results.columns:
+                    combined_results = combined_results.rename(columns={'index': 'geneid'})
             
-            # Reset index to make gene names a column
-            combined_results = combined_results.reset_index()
+            # Ensure geneid column is present
+            if combined_results.index.name is not None and 'geneid' not in combined_results.columns:
+                combined_results['geneid'] = combined_results.index
+                combined_results = combined_results.reset_index(drop=True)
+            
+            # Reorder columns to put geneid first
+            cols = combined_results.columns.tolist()
+            if 'geneid' in cols:
+                cols.insert(0, cols.pop(cols.index('geneid')))
+                combined_results = combined_results[cols]
             
             # Save if output file specified
             if self.output_file:
