@@ -7,7 +7,7 @@ from PyQt5.QtWidgets import (QWidget, QDialog, QVBoxLayout, QTabWidget, QHBoxLay
                              QMessageBox, QFileDialog, QFrame, QLabel, QTextEdit, 
                              QComboBox, QSpinBox, QGroupBox, QFormLayout, QLineEdit, 
                              QSizePolicy, QScrollArea, QTableWidget, QTableWidgetItem,
-                             QDoubleSpinBox, QSplitter)
+                             QDoubleSpinBox, QSplitter, QButtonGroup, QRadioButton)
 from PyQt5.QtCore import QThread, pyqtSignal, QUrl, Qt
 from PyQt5.QtWebEngineWidgets import QWebEngineView
 from PyQt5.QtGui import QFont, QTextCursor
@@ -20,6 +20,16 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import sys
+
+# Try to import matplotlib
+try:
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+    from matplotlib.figure import Figure
+    MATPLOTLIB_AVAILABLE = True
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    print("Warning: matplotlib not available. Install it to view histogram plots.")
 
 # Try to import PyDESeq2 if available
 try:
@@ -586,7 +596,7 @@ class FeatureCounts_wrapper(QWidget):
                 for tool in config_data:
                     if tool.get("name").lower() == "featurecounts":
                         self.tool_path = os.path.join(self.plugin_path, tool["path"].lstrip("/"))
-                        QMessageBox.information(self, "Info", f"FeatureCounts executable found in: {self.tool_path}")
+                        # QMessageBox.information(self, "Info", f"FeatureCounts executable found in: {self.tool_path}")
                         break
         except Exception as e:
             print(f"Config load failed: {e}")
@@ -653,6 +663,20 @@ class FeatureCounts_wrapper(QWidget):
         params_layout = QFormLayout()
         params_group.setLayout(params_layout)
         
+        # Library type
+        self.lib_type_choice = QButtonGroup()
+        lib_type_layout = QHBoxLayout()
+        self.single_end_radio = QRadioButton("Single-end")
+        self.paired_end_radio = QRadioButton("Paired-end")
+        self.lib_type_choice.addButton(self.single_end_radio)
+        self.lib_type_choice.addButton(self.paired_end_radio)
+        self.lib_type_choice.setExclusive(True)
+        self.paired_end_radio.setChecked(True)  # Set default selection
+        
+        lib_type_layout.addWidget(self.single_end_radio)
+        lib_type_layout.addWidget(self.paired_end_radio)
+        params_layout.addRow("Library type:", lib_type_layout)
+        
         # Feature type
         self.feature_type_combo = QComboBox()
         self.feature_type_combo.addItems(["exon", "gene", "CDS", "transcript"])
@@ -688,9 +712,16 @@ class FeatureCounts_wrapper(QWidget):
         layout = QVBoxLayout()
         self.results_tab.setLayout(layout)
         
-        self.results_table = QTableWidget()
-        self.results_table.setAlternatingRowColors(True)
-        layout.addWidget(self.results_table)
+        # Create matplotlib figure for histogram
+        if MATPLOTLIB_AVAILABLE:
+            self.figure = Figure(figsize=(10, 6))
+            self.canvas = FigureCanvas(self.figure)
+            layout.addWidget(self.canvas)
+        else:
+            # Fallback to table if matplotlib is not available
+            self.results_table = QTableWidget()
+            self.results_table.setAlternatingRowColors(True)
+            layout.addWidget(self.results_table)
         
     def setup_console_tab(self):
         layout = QVBoxLayout()
@@ -799,7 +830,8 @@ class FeatureCounts_wrapper(QWidget):
             "-t", self.feature_type_combo.currentText(),
             "-g", self.attr_type_edit.text(),
             "-T", str(self.threads_spin.value()),
-            "-o", self.output_file_edit.text()
+            "-o", self.output_file_edit.text(),
+            "-p" if self.paired_end_radio.isChecked() else ""
         ]
         cmd.extend(bam_files)
         
@@ -830,7 +862,7 @@ class FeatureCounts_wrapper(QWidget):
         self.tab_widget.setCurrentIndex(1)  # Switch to results tab
         
     def load_results(self, output_file):
-        """Load count results into table"""
+        """Load count results and display histogram"""
         try:
             # FeatureCounts output has comments at the beginning
             with open(output_file, 'r') as f:
@@ -846,20 +878,42 @@ class FeatureCounts_wrapper(QWidget):
             # Read data starting from header
             df = pd.read_csv(output_file, sep='\t', skiprows=header_idx, index_col=0)
             
-            # Display in table
-            self.results_table.setRowCount(len(df))
-            self.results_table.setColumnCount(len(df.columns))
-            self.results_table.setHorizontalHeaderLabels(df.columns.tolist())
-            
-            for i, row in enumerate(df.itertuples()):
-                for j, val in enumerate(row[1:], 0):
-                    item = QTableWidgetItem(str(val))
-                    self.results_table.setItem(i, j, item)
-                    
-            self.results_table.resizeColumnsToContents()
+            # Check if matplotlib is available
+            if MATPLOTLIB_AVAILABLE:
+                # Clear the previous plot
+                self.figure.clear()
+                
+                # Calculate total counts per gene (sum across all samples)
+                total_counts_per_gene = df.iloc[:, :-4].sum(axis=1)  # Exclude last 4 columns (Length, EffectiveLength, etc.)
+                
+                # Create histogram
+                ax = self.figure.add_subplot(111)
+                ax.hist(total_counts_per_gene, bins=50, edgecolor='black')
+                ax.set_xlabel('Count Value')
+                ax.set_ylabel('Number of Genes')
+                ax.set_title('Distribution of Gene Counts')
+                # ax.grid(True, alpha=0.3)
+
+                # disable xticks
+                ax.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
+                
+                # Refresh canvas
+                self.canvas.draw()
+            else:
+                # Fallback to table display if matplotlib is not available
+                self.results_table.setRowCount(len(df))
+                self.results_table.setColumnCount(len(df.columns))
+                self.results_table.setHorizontalHeaderLabels(df.columns.tolist())
+                
+                for i, row in enumerate(df.itertuples()):
+                    for j, val in enumerate(row[1:], 0):
+                        item = QTableWidgetItem(str(val))
+                        self.results_table.setItem(i, j, item)
+                        
+                self.results_table.resizeColumnsToContents()
             
         except Exception as e:
-            QMessageBox.warning(self, "Warning", f"Could not load results table: {e}")
+            QMessageBox.warning(self, "Warning", f"Could not load results: {e}")
         
     def command_error(self, error_msg):
         self.is_running = False
