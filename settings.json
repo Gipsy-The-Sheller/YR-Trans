@@ -9,7 +9,7 @@
       "description": "An integrated workflow for transcriptome analysis including HISAT2, FeatureCounts, and PyDESeq2.",
       "category": "Transcriptome Analysis",
       "placement": { "path": "YR_Trans", "priority": 0, "favicon": "favicon.svg"},
-      "entry_point": "YR_Trans.plugin:YR_Trans_entry",
+      "entry_point": "YR_Trans.analysis:YR_Trans_entry",
       "runtime": {
         "type": "polypyplug",
         "dependencies": ["pandas", "numpy"]
@@ -21,8 +21,8 @@
       "author": "YRTools Official Plugin Base",
       "description": "HISAT2: fast and sensitive alignment program for mapping next-generation sequencing reads.",
       "category": "Transcriptome Analysis",
-      "placement": { "path": "YR_Trans/Alignment", "priority": 0, "favicon": "YR_Trans/src/hisat.svg"},
-      "entry_point": "YR_Trans.plugin:HISAT2_wrapper_entry",
+      "placement": { "path": "YR_Trans/Alignment", "priority": 1, "favicon": "YR_Trans/src/hisat.svg"},
+      "entry_point": "YR_Trans.analysis:HISAT2_wrapper_entry",
       "runtime": {
         "type": "polypyplug",
         "dependencies": []
@@ -34,8 +34,8 @@
       "author": "YRTools Official Plugin Base",
       "description": "FeatureCounts: a highly efficient general-purpose read summarization program.",
       "category": "Transcriptome Analysis",
-      "placement": { "path": "YR_Trans/Count", "priority": 0, "favicon": "YR_Trans/src/featurecounts.svg"},
-      "entry_point": "YR_Trans.plugin:FeatureCounts_wrapper_entry",
+      "placement": { "path": "YR_Trans/Count", "priority": 1, "favicon": "YR_Trans/src/featurecounts.svg"},
+      "entry_point": "YR_Trans.analysis:FeatureCounts_wrapper_entry",
       "runtime": {
         "type": "polypyplug",
         "dependencies": []
@@ -47,11 +47,24 @@
       "author": "YRTools Official Plugin Base",
       "description": "PyDESeq2: differential expression analysis using DESeq2 algorithm.",
       "category": "Transcriptome Analysis",
-      "placement": { "path": "YR_Trans/Analysis", "priority": 0, "favicon": "YR_Trans/src/pydeseq.svg"},
-      "entry_point": "YR_Trans.plugin:PyDESeq2_wrapper_entry",
+      "placement": { "path": "YR_Trans/Analysis", "priority": 1, "favicon": "YR_Trans/src/pydeseq.svg"},
+      "entry_point": "YR_Trans.analysis:PyDESeq2_wrapper_entry",
       "runtime": {
         "type": "polypyplug",
         "dependencies": ["pandas", "numpy"]
+      }
+    },
+    {
+      "name": "TransHub",
+      "version": "0.1.0",
+      "author": "YRTools Official Plugin Base",
+      "description": "TransHub: a comprehensive tool for transcriptome analysis.",
+      "category": "Transcriptome Analysis",
+      "placement": { "path": "YR_Trans", "priority": 0, "favicon": "favicon.svg"},
+      "entry_point": "YR_Trans.trans_hub:TransHubPlugin",
+      "runtime": {
+        "type": "polypyplug",
+        "dependencies": []
       }
     }
   ]
