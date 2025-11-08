@@ -10,6 +10,7 @@ import json
 import pandas as pd
 import re
 import subprocess
+import numpy as np
 from pathlib import Path
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTableWidget,
                              QTableWidgetItem, QTabWidget, QDialog, QFormLayout, QLineEdit,
@@ -640,6 +641,8 @@ class ProcessThread(QThread):
     def feature_counts(self):
         """Run FeatureCounts on all BAM files"""
         try:
+            self.console_output.emit("Starting FeatureCounts counting workflow...", "info")
+            
             # Get FeatureCounts path
             config_path = os.path.join(self.plugin_path, "config.json")
             featurecounts_path = None
@@ -650,45 +653,46 @@ class ProcessThread(QThread):
                 for tool in config_data:
                     if tool.get("name").lower() == "featurecounts":
                         featurecounts_path = os.path.join(self.plugin_path, tool["path"].lstrip("/"))
-                        break
             
             if not featurecounts_path or not os.path.exists(featurecounts_path):
                 self.error.emit("FeatureCounts executable not found")
                 return False
                 
-            # Find annotation file (GTF)
-            # For now, we'll assume it's in the same directory as the index or needs to be specified
-            # In a real implementation, this would be part of the project configuration
-            gtf_file = self.project_data["annotation_file"]  # This would need to be specified in the project configuration
-            
+            # Get annotation file
+            gtf_file = self.project_data.get('annotation_file')
             if not gtf_file or not os.path.exists(gtf_file):
                 self.error.emit("Annotation file not found or invalid")
                 return False
-            
-            # Create output directory
+                
+            # Find BAM files
             results_dir = os.path.join(self.project_path, f"{self.project_data['name']}_results")
             bam_dir = os.path.join(results_dir, "bam_files")
-            count_file = os.path.join(results_dir, "counts.txt")
             
-            # Find all BAM files
             bam_files = []
             if os.path.exists(bam_dir):
                 for file in os.listdir(bam_dir):
                     if file.endswith(".bam"):
                         bam_files.append(os.path.join(bam_dir, file))
-            
+                        
             if not bam_files:
                 self.error.emit("No BAM files found for counting")
                 return False
                 
+            # Output file
+            count_file = os.path.join(results_dir, "counts.txt")
+            
             # Build FeatureCounts command
             cmd = [
                 featurecounts_path,
                 "-a", gtf_file,
                 "-o", count_file,
                 "-T", "4",  # threads
+                "-t", "exon",
+                "-g", "gene_id",
                 "-p"  # paired-end
             ]
+            
+            # Add all BAM files
             cmd.extend(bam_files)
             
             self.console_output.emit(" ".join(cmd), "command")
@@ -709,10 +713,185 @@ class ProcessThread(QThread):
                 self.error.emit(f"FeatureCounts counting failed: {result.stderr}")
                 return False
                 
+            # Calculate TPM and FPKM values
+            self.console_output.emit("Calculating TPM and FPKM values...", "info")
+            if not self._calculate_expression_values(results_dir, count_file, gtf_file):
+                self.console_output.emit("Warning: Failed to calculate TPM/FPKM values", "warning")
+                
             return True
         except Exception as e:
             self.error.emit(f"Error during FeatureCounts counting: {str(e)}")
             return False
+            
+    def _calculate_expression_values(self, results_dir, count_file, gtf_file):
+        """Calculate TPM and FPKM expression values"""
+        try:
+            # Load count data
+            self.console_output.emit("Loading count data...", "info")
+            with open(count_file, 'r', encoding='utf-8', errors='ignore') as f:
+                lines = f.readlines()
+            
+            # Find the header line (starts with Geneid)
+            header_idx = 0
+            for i, line in enumerate(lines):
+                if line.startswith("Geneid"):
+                    header_idx = i
+                    break
+            
+            # Read data starting from header
+            count_df = pd.read_csv(count_file, sep='\t', skiprows=header_idx)
+            
+            # Get gene lengths from GTF file
+            self.console_output.emit("Extracting gene lengths from annotation file...", "info")
+            gene_lengths = self._get_gene_lengths_from_gtf(gtf_file)
+            
+            # Get count data (sample columns only)
+            count_columns = count_df.columns[1:-4]  # Sample columns (exclude Geneid and last 4 metadata columns)
+            count_data = count_df[count_columns]
+            gene_ids = count_df.iloc[:, 0]  # Gene IDs
+            
+            # Ensure count_data contains only numeric values
+            count_data = count_data.apply(pd.to_numeric, errors='coerce').fillna(0)
+            
+            # Match gene lengths with count data
+            lengths = []
+            valid_genes = []
+            valid_count_data = []
+            
+            for i, gene_id in enumerate(gene_ids):
+                gene_id_str = str(gene_id)
+                if gene_id_str in gene_lengths:
+                    lengths.append(gene_lengths[gene_id_str])
+                    valid_genes.append(gene_id_str)
+                    valid_count_data.append(count_data.iloc[i])
+            
+            if not valid_genes:
+                self.console_output.emit("No matching genes found between count data and annotation file", "error")
+                return False
+            
+            lengths = np.array(lengths)
+            valid_count_data = pd.DataFrame(valid_count_data, columns=count_columns)
+            
+            # Calculate TPM
+            self.console_output.emit("Calculating TPM values...", "info")
+            rpk = valid_count_data.div(lengths / 1000, axis=0)
+            tpm = rpk.div(rpk.sum(axis=0) / 1e6, axis=1)
+            tpm_df = tpm.copy()
+            tpm_df.insert(0, "Geneid", valid_genes)
+            
+            # Save TPM
+            tpm_file = os.path.join(results_dir, "counts_tpm.txt")
+            tpm_df.to_csv(tpm_file, sep='\t', index=False)
+            
+            # Save filtered TPM
+            filtered_tpm_df = self._filter_zero_count_rows(tpm_df)
+            filtered_tpm_file = os.path.join(results_dir, "counts_tpm_filtered.txt")
+            filtered_tpm_df.to_csv(filtered_tpm_file, sep='\t', index=False)
+            
+            # Calculate FPKM
+            self.console_output.emit("Calculating FPKM values...", "info")
+            total_counts = count_data.sum(axis=0)  # Total counts per sample
+            rpk = valid_count_data.div(lengths / 1000, axis=0)
+            fpkm = rpk.div(total_counts / 1e6, axis=1)
+            fpkm_df = fpkm.copy()
+            fpkm_df.insert(0, "Geneid", valid_genes)
+            
+            # Save FPKM
+            fpkm_file = os.path.join(results_dir, "counts_fpkm.txt")
+            fpkm_df.to_csv(fpkm_file, sep='\t', index=False)
+            
+            # Save filtered FPKM
+            filtered_fpkm_df = self._filter_zero_count_rows(fpkm_df)
+            filtered_fpkm_file = os.path.join(results_dir, "counts_fpkm_filtered.txt")
+            filtered_fpkm_df.to_csv(filtered_fpkm_file, sep='\t', index=False)
+            
+            self.console_output.emit(f"TPM values saved to: {tpm_file}", "info")
+            self.console_output.emit(f"Filtered TPM values saved to: {filtered_tpm_file}", "info")
+            self.console_output.emit(f"FPKM values saved to: {fpkm_file}", "info")
+            self.console_output.emit(f"Filtered FPKM values saved to: {filtered_fpkm_file}", "info")
+            
+            return True
+        except Exception as e:
+            self.console_output.emit(f"Failed to calculate expression values: {str(e)}", "error")
+            return False
+    
+    def _get_gene_lengths_from_gtf(self, gtf_file):
+        """Extract gene lengths from GTF annotation file"""
+        gene_lengths = {}
+        
+        try:
+            with open(gtf_file, 'r', encoding='utf-8', errors='ignore') as f:
+                for line in f:
+                    if line.startswith('#'):
+                        continue  # Skip comment lines
+                        
+                    parts = line.strip().split('\t')
+                    if len(parts) < 9:
+                        continue  # Not a valid GTF line
+                        
+                    feature_type = parts[2]
+                    if feature_type != "exon":
+                        continue  # Only process exon features for gene length calculation
+                        
+                    # Parse attributes column (column 9)
+                    attributes = parts[8]
+                    gene_id = None
+                    
+                    # Extract gene_id from attributes
+                    if 'gene_id' in attributes:
+                        # Handle different attribute formats
+                        if 'gene_id "' in attributes:
+                            # Format: gene_id "ENSG00000187634";
+                            gene_id_match = attributes.split('gene_id "')[1].split('";')[0]
+                            gene_id = gene_id_match
+                        else:
+                            # Format: gene_id ENSG00000187634;
+                            gene_id_match = attributes.split('gene_id ')[1].split(';')[0]
+                            gene_id = gene_id_match
+                    
+                    if not gene_id:
+                        continue
+                        
+                    # Calculate length of feature
+                    try:
+                        start = int(parts[3])
+                        end = int(parts[4])
+                        length = end - start + 1
+                        
+                        # For gene_id, sum up lengths of all exons
+                        if gene_id in gene_lengths:
+                            gene_lengths[gene_id] += length
+                        else:
+                            gene_lengths[gene_id] = length
+                    except ValueError:
+                        # Skip lines with invalid coordinates
+                        continue
+                        
+        except Exception as e:
+            self.console_output.emit(f"Failed to parse annotation file: {str(e)}", "error")
+            
+        return gene_lengths
+    
+    def _filter_zero_count_rows(self, df):
+        """Filter out rows where all count values are zero"""
+        try:
+            # Get count columns (exclude Geneid column)
+            count_columns = [col for col in df.columns if col != 'Geneid']
+            
+            # Convert count data to numeric
+            count_data = df[count_columns].apply(pd.to_numeric, errors='coerce').fillna(0)
+            
+            # Identify rows where all counts are zero
+            zero_rows = (count_data == 0).all(axis=1)
+            
+            # Filter out zero-count rows
+            filtered_df = df[~zero_rows].copy()
+            
+            return filtered_df
+            
+        except Exception as e:
+            self.console_output.emit(f"Failed to filter data: {str(e)}", "error")
+            return df
             
     def pydeseq2_analysis(self):
         """Run PyDESeq2 differential expression analysis"""
@@ -1012,6 +1191,25 @@ class TransHub(QWidget):
         layout = QVBoxLayout()
         self.analyses_tab.setLayout(layout)
         
+        # Create tab widget for analysis types
+        self.analysis_tab_widget = QTabWidget()
+        layout.addWidget(self.analysis_tab_widget)
+        
+        # Expression Level Analysis tab
+        self.expression_tab = QWidget()
+        self.analysis_tab_widget.addTab(self.expression_tab, "Expression Level Analysis")
+        self.setup_expression_tab()
+        
+        # Differential Analysis tab
+        self.differential_tab = QWidget()
+        self.analysis_tab_widget.addTab(self.differential_tab, "Differential Analysis")
+        self.setup_differential_tab()
+        
+    def setup_expression_tab(self):
+        """Setup the expression level analysis tab"""
+        layout = QVBoxLayout()
+        self.expression_tab.setLayout(layout)
+        
         # Create splitter
         splitter = QSplitter(Qt.Horizontal)
         layout.addWidget(splitter)
@@ -1022,24 +1220,24 @@ class TransHub(QWidget):
         left_widget.setLayout(left_layout)
         
         # Data table
-        self.data_table = QTableWidget()
-        left_layout.addWidget(self.data_table)
+        self.expression_table = QTableWidget()
+        left_layout.addWidget(self.expression_table)
         
         # Filter section
         filter_group = QGroupBox("Data Filtering")
         filter_layout = QVBoxLayout()
         filter_group.setLayout(filter_layout)
         
-        self.filter_widget = FilterWidget()
-        filter_layout.addWidget(self.filter_widget)
+        self.expression_filter_widget = FilterWidget()
+        filter_layout.addWidget(self.expression_filter_widget)
         
         filter_button_layout = QHBoxLayout()
-        self.add_filter_btn = QPushButton("Add Condition")
-        self.add_filter_btn.clicked.connect(self.add_filter_condition)
-        self.clear_filter_btn = QPushButton("Clear Conditions")
-        self.clear_filter_btn.clicked.connect(self.clear_filter_conditions)
-        filter_button_layout.addWidget(self.add_filter_btn)
-        filter_button_layout.addWidget(self.clear_filter_btn)
+        self.add_expression_filter_btn = QPushButton("Add Condition")
+        self.add_expression_filter_btn.clicked.connect(self.add_expression_filter_condition)
+        self.clear_expression_filter_btn = QPushButton("Clear Conditions")
+        self.clear_expression_filter_btn.clicked.connect(self.clear_expression_filter_conditions)
+        filter_button_layout.addWidget(self.add_expression_filter_btn)
+        filter_button_layout.addWidget(self.clear_expression_filter_btn)
         filter_button_layout.addStretch()
         filter_layout.addLayout(filter_button_layout)
         
@@ -1057,11 +1255,11 @@ class TransHub(QWidget):
         right_layout.addWidget(filter_conditions_label)
         
         # Filter conditions container (similar to HISAT2 reads tags)
-        self.filter_conditions_container = QFrame()
-        self.filter_conditions_layout = QVBoxLayout()
-        self.filter_conditions_container.setLayout(self.filter_conditions_layout)
-        self.filter_conditions_container.setVisible(False)
-        right_layout.addWidget(self.filter_conditions_container)
+        self.expression_filter_conditions_container = QFrame()
+        self.expression_filter_conditions_layout = QVBoxLayout()
+        self.expression_filter_conditions_container.setLayout(self.expression_filter_conditions_layout)
+        self.expression_filter_conditions_container.setVisible(False)
+        right_layout.addWidget(self.expression_filter_conditions_container)
         
         right_layout.addStretch()
         splitter.addWidget(right_widget)
@@ -1069,15 +1267,77 @@ class TransHub(QWidget):
         # Set splitter sizes
         splitter.setSizes([700, 300])
         
-    def add_filter_condition(self):
-        """Add a filter condition"""
-        if not hasattr(self, 'filter_conditions'):
-            self.filter_conditions = []
+    def setup_differential_tab(self):
+        """Setup the differential analysis tab"""
+        layout = QVBoxLayout()
+        self.differential_tab.setLayout(layout)
+        
+        # Create splitter
+        splitter = QSplitter(Qt.Horizontal)
+        layout.addWidget(splitter)
+        
+        # Left side - data table and filter controls
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+        left_widget.setLayout(left_layout)
+        
+        # Data table
+        self.differential_table = QTableWidget()
+        left_layout.addWidget(self.differential_table)
+        
+        # Filter section
+        filter_group = QGroupBox("Data Filtering")
+        filter_layout = QVBoxLayout()
+        filter_group.setLayout(filter_layout)
+        
+        self.differential_filter_widget = FilterWidget()
+        filter_layout.addWidget(self.differential_filter_widget)
+        
+        filter_button_layout = QHBoxLayout()
+        self.add_differential_filter_btn = QPushButton("Add Condition")
+        self.add_differential_filter_btn.clicked.connect(self.add_differential_filter_condition)
+        self.clear_differential_filter_btn = QPushButton("Clear Conditions")
+        self.clear_differential_filter_btn.clicked.connect(self.clear_differential_filter_conditions)
+        filter_button_layout.addWidget(self.add_differential_filter_btn)
+        filter_button_layout.addWidget(self.clear_differential_filter_btn)
+        filter_button_layout.addStretch()
+        filter_layout.addLayout(filter_button_layout)
+        
+        left_layout.addWidget(filter_group)
+        splitter.addWidget(left_widget)
+        
+        # Right side - filter conditions display
+        right_widget = QWidget()
+        right_layout = QVBoxLayout()
+        right_widget.setLayout(right_layout)
+        
+        # Filter conditions label
+        filter_conditions_label = QLabel("Filter Conditions:")
+        filter_conditions_label.setStyleSheet("font-weight: bold;")
+        right_layout.addWidget(filter_conditions_label)
+        
+        # Filter conditions container (similar to HISAT2 reads tags)
+        self.differential_filter_conditions_container = QFrame()
+        self.differential_filter_conditions_layout = QVBoxLayout()
+        self.differential_filter_conditions_container.setLayout(self.differential_filter_conditions_layout)
+        self.differential_filter_conditions_container.setVisible(False)
+        right_layout.addWidget(self.differential_filter_conditions_container)
+        
+        right_layout.addStretch()
+        splitter.addWidget(right_widget)
+        
+        # Set splitter sizes
+        splitter.setSizes([700, 300])
+        
+    def add_expression_filter_condition(self):
+        """Add a filter condition for expression data"""
+        if not hasattr(self, 'expression_filter_conditions'):
+            self.expression_filter_conditions = []
             
         # Get filter values
-        column = self.filter_widget.column_combo.currentText()
-        operator = self.filter_widget.operator_combo.currentText()
-        value = self.filter_widget.value_spinbox.value()
+        column = self.expression_filter_widget.column_combo.currentText()
+        operator = self.expression_filter_widget.operator_combo.currentText()
+        value = self.expression_filter_widget.value_spinbox.value()
         
         if not column:
             QMessageBox.warning(self, "Warning", "Please select a column to filter")
@@ -1090,7 +1350,7 @@ class TransHub(QWidget):
             'value': value
         }
         
-        self.filter_conditions.append(condition_info)
+        self.expression_filter_conditions.append(condition_info)
         
         # Create tag widget (similar to HISAT2 reads tags)
         tag_widget = QFrame()
@@ -1129,70 +1389,70 @@ class TransHub(QWidget):
                 background-color: #c82333;
             }
         """)
-        close_btn.clicked.connect(lambda: self.remove_filter_condition(condition_info, tag_widget))
+        close_btn.clicked.connect(lambda: self.remove_expression_filter_condition(condition_info, tag_widget))
         tag_layout.addWidget(close_btn)
         
         # Add to layout
-        self.filter_conditions_layout.addWidget(tag_widget)
-        if not hasattr(self, 'filter_condition_tags'):
-            self.filter_condition_tags = []
-        self.filter_condition_tags.append((condition_info, tag_widget))
+        self.expression_filter_conditions_layout.addWidget(tag_widget)
+        if not hasattr(self, 'expression_filter_condition_tags'):
+            self.expression_filter_condition_tags = []
+        self.expression_filter_condition_tags.append((condition_info, tag_widget))
         
         # Show container
-        self.filter_conditions_container.setVisible(True)
+        self.expression_filter_conditions_container.setVisible(True)
         
         # Apply filter
-        self.apply_filter()
+        self.apply_expression_filter()
         
-    def remove_filter_condition(self, condition_info, tag_widget):
-        """Remove a filter condition"""
-        if hasattr(self, 'filter_conditions') and condition_info in self.filter_conditions:
-            self.filter_conditions.remove(condition_info)
+    def remove_expression_filter_condition(self, condition_info, tag_widget):
+        """Remove an expression filter condition"""
+        if hasattr(self, 'expression_filter_conditions') and condition_info in self.expression_filter_conditions:
+            self.expression_filter_conditions.remove(condition_info)
         
         # Remove from tags list
-        if hasattr(self, 'filter_condition_tags'):
-            self.filter_condition_tags = [(ci, tw) for ci, tw in self.filter_condition_tags if ci != condition_info]
+        if hasattr(self, 'expression_filter_condition_tags'):
+            self.expression_filter_condition_tags = [(ci, tw) for ci, tw in self.expression_filter_condition_tags if ci != condition_info]
         
         # Remove widget
-        self.filter_conditions_layout.removeWidget(tag_widget)
+        self.expression_filter_conditions_layout.removeWidget(tag_widget)
         tag_widget.deleteLater()
         
         # Hide container if no conditions left
-        if not hasattr(self, 'filter_conditions') or not self.filter_conditions:
-            self.filter_conditions_container.setVisible(False)
+        if not hasattr(self, 'expression_filter_conditions') or not self.expression_filter_conditions:
+            self.expression_filter_conditions_container.setVisible(False)
             
         # Apply filter
-        self.apply_filter()
+        self.apply_expression_filter()
         
-    def clear_filter_conditions(self):
-        """Clear all filter conditions"""
-        if hasattr(self, 'filter_conditions'):
-            self.filter_conditions.clear()
+    def clear_expression_filter_conditions(self):
+        """Clear all expression filter conditions"""
+        if hasattr(self, 'expression_filter_conditions'):
+            self.expression_filter_conditions.clear()
             
-        if hasattr(self, 'filter_condition_tags'):
+        if hasattr(self, 'expression_filter_condition_tags'):
             # Remove all tag widgets
-            for condition_info, tag_widget in self.filter_condition_tags:
-                self.filter_conditions_layout.removeWidget(tag_widget)
+            for condition_info, tag_widget in self.expression_filter_condition_tags:
+                self.expression_filter_conditions_layout.removeWidget(tag_widget)
                 tag_widget.deleteLater()
-            self.filter_condition_tags.clear()
+            self.expression_filter_condition_tags.clear()
             
         # Hide container
-        self.filter_conditions_container.setVisible(False)
+        self.expression_filter_conditions_container.setVisible(False)
         
         # Apply filter (this will reset the table to show all data)
-        self.apply_filter()
+        self.apply_expression_filter()
         
-    def apply_filter(self):
-        """Apply filter to the data table"""
-        if self.current_data is None:
+    def apply_expression_filter(self):
+        """Apply filter to the expression data table"""
+        if not hasattr(self, 'current_expression_data') or self.current_expression_data is None:
             return
             
         # Start with all data
-        filtered_data = self.current_data.copy()
+        filtered_data = self.current_expression_data.copy()
         
         # Apply each filter condition
-        if hasattr(self, 'filter_conditions') and self.filter_conditions:
-            for condition in self.filter_conditions:
+        if hasattr(self, 'expression_filter_conditions') and self.expression_filter_conditions:
+            for condition in self.expression_filter_conditions:
                 column = condition['column']
                 operator = condition['operator']
                 value = condition['value']
@@ -1210,25 +1470,182 @@ class TransHub(QWidget):
                     filtered_data = filtered_data[filtered_data[column] < value]
         
         # Update data table with filtered data
-        self.update_data_table(filtered_data)
+        self.update_expression_table(filtered_data)
         
-    def update_data_table(self, data):
-        """Update data table with provided data"""
-        self.data_table.setRowCount(len(data))
-        self.data_table.setColumnCount(len(data.columns))
-        self.data_table.setHorizontalHeaderLabels(data.columns.tolist())
+    def add_differential_filter_condition(self):
+        """Add a filter condition for differential data"""
+        if not hasattr(self, 'differential_filter_conditions'):
+            self.differential_filter_conditions = []
+            
+        # Get filter values
+        column = self.differential_filter_widget.column_combo.currentText()
+        operator = self.differential_filter_widget.operator_combo.currentText()
+        value = self.differential_filter_widget.value_spinbox.value()
+        
+        if not column:
+            QMessageBox.warning(self, "Warning", "Please select a column to filter")
+            return
+            
+        # Create condition info
+        condition_info = {
+            'column': column,
+            'operator': operator,
+            'value': value
+        }
+        
+        self.differential_filter_conditions.append(condition_info)
+        
+        # Create tag widget (similar to HISAT2 reads tags)
+        tag_widget = QFrame()
+        tag_widget.setFrameStyle(QFrame.Box)
+        tag_widget.setStyleSheet("""
+            QFrame {
+                background-color: #e9ecef;
+                border-radius: 15px;
+                margin: 2px;
+            }
+        """)
+        
+        tag_layout = QHBoxLayout()
+        tag_layout.setContentsMargins(8, 4, 8, 4)
+        tag_widget.setLayout(tag_layout)
+        
+        # Condition info label
+        info_text = f"{column} {operator} {value}"
+        info_label = QLabel(info_text)
+        info_label.setStyleSheet("color: #495057;")
+        tag_layout.addWidget(info_label)
+        
+        # Close button
+        close_btn = QPushButton("×")
+        close_btn.setFixedSize(20, 20)
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #dc3545;
+                color: white;
+                border: none;
+                border-radius: 10px;
+                font-weight: bold;
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                background-color: #c82333;
+            }
+        """)
+        close_btn.clicked.connect(lambda: self.remove_differential_filter_condition(condition_info, tag_widget))
+        tag_layout.addWidget(close_btn)
+        
+        # Add to layout
+        self.differential_filter_conditions_layout.addWidget(tag_widget)
+        if not hasattr(self, 'differential_filter_condition_tags'):
+            self.differential_filter_condition_tags = []
+        self.differential_filter_condition_tags.append((condition_info, tag_widget))
+        
+        # Show container
+        self.differential_filter_conditions_container.setVisible(True)
+        
+        # Apply filter
+        self.apply_differential_filter()
+        
+    def remove_differential_filter_condition(self, condition_info, tag_widget):
+        """Remove a differential filter condition"""
+        if hasattr(self, 'differential_filter_conditions') and condition_info in self.differential_filter_conditions:
+            self.differential_filter_conditions.remove(condition_info)
+        
+        # Remove from tags list
+        if hasattr(self, 'differential_filter_condition_tags'):
+            self.differential_filter_condition_tags = [(ci, tw) for ci, tw in self.differential_filter_condition_tags if ci != condition_info]
+        
+        # Remove widget
+        self.differential_filter_conditions_layout.removeWidget(tag_widget)
+        tag_widget.deleteLater()
+        
+        # Hide container if no conditions left
+        if not hasattr(self, 'differential_filter_conditions') or not self.differential_filter_conditions:
+            self.differential_filter_conditions_container.setVisible(False)
+            
+        # Apply filter
+        self.apply_differential_filter()
+        
+    def clear_differential_filter_conditions(self):
+        """Clear all differential filter conditions"""
+        if hasattr(self, 'differential_filter_conditions'):
+            self.differential_filter_conditions.clear()
+            
+        if hasattr(self, 'differential_filter_condition_tags'):
+            # Remove all tag widgets
+            for condition_info, tag_widget in self.differential_filter_condition_tags:
+                self.differential_filter_conditions_layout.removeWidget(tag_widget)
+                tag_widget.deleteLater()
+            self.differential_filter_condition_tags.clear()
+            
+        # Hide container
+        self.differential_filter_conditions_container.setVisible(False)
+        
+        # Apply filter (this will reset the table to show all data)
+        self.apply_differential_filter()
+        
+    def apply_differential_filter(self):
+        """Apply filter to the differential data table"""
+        if not hasattr(self, 'current_differential_data') or self.current_differential_data is None:
+            return
+            
+        # Start with all data
+        filtered_data = self.current_differential_data.copy()
+        
+        # Apply each filter condition
+        if hasattr(self, 'differential_filter_conditions') and self.differential_filter_conditions:
+            for condition in self.differential_filter_conditions:
+                column = condition['column']
+                operator = condition['operator']
+                value = condition['value']
+                
+                # Apply filter based on operator
+                if operator == "Greater than or equal to":
+                    filtered_data = filtered_data[filtered_data[column] >= value]
+                elif operator == "Greater than":
+                    filtered_data = filtered_data[filtered_data[column] > value]
+                elif operator == "Equal to":
+                    filtered_data = filtered_data[filtered_data[column] == value]
+                elif operator == "Less than or equal to":
+                    filtered_data = filtered_data[filtered_data[column] <= value]
+                elif operator == "Less than":
+                    filtered_data = filtered_data[filtered_data[column] < value]
+        
+        # Update data table with filtered data
+        self.update_differential_table(filtered_data)
+        
+    def update_expression_table(self, data):
+        """Update expression data table with provided data"""
+        self.expression_table.setRowCount(len(data))
+        self.expression_table.setColumnCount(len(data.columns))
+        self.expression_table.setHorizontalHeaderLabels(data.columns.tolist())
         
         for i, row in data.iterrows():
             for j, (col, val) in enumerate(row.items()):
                 item = QTableWidgetItem(str(val))
                 if isinstance(val, (int, float)):
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-                self.data_table.setItem(i, j, item)
+                self.expression_table.setItem(i, j, item)
                 
-        self.data_table.resizeColumnsToContents()
+        self.expression_table.resizeColumnsToContents()
+        
+    def update_differential_table(self, data):
+        """Update differential data table with provided data"""
+        self.differential_table.setRowCount(len(data))
+        self.differential_table.setColumnCount(len(data.columns))
+        self.differential_table.setHorizontalHeaderLabels(data.columns.tolist())
+        
+        for i, row in data.iterrows():
+            for j, (col, val) in enumerate(row.items()):
+                item = QTableWidgetItem(str(val))
+                if isinstance(val, (int, float)):
+                    item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                self.differential_table.setItem(i, j, item)
+                
+        self.differential_table.resizeColumnsToContents()
         
     def setup_console_tab(self):
-        """Setup console tab similar to HISAT2 plugin"""
         layout = QVBoxLayout()
         self.console_tab.setLayout(layout)
         
@@ -1253,26 +1670,8 @@ class TransHub(QWidget):
         controls_layout.addStretch()
         layout.addLayout(controls_layout)
         
-    def clear_console(self):
-        """Clear console text"""
-        self.console_text.clear()
-        
-    def add_console_message(self, message, msg_type="info"):
-        """Add message to console"""
-        timestamp = pd.Timestamp.now().strftime("%H:%M:%S")
-        if msg_type == "command":
-            formatted = f"[{timestamp}] $ {message}"
-        elif msg_type == "error":
-            formatted = f"[{timestamp}] ERROR: {message}"
-        elif msg_type == "warning":
-            formatted = f"[{timestamp}] WARNING: {message}"
-        else:
-            formatted = f"[{timestamp}] {message}"
-            
-        self.console_text.append(formatted)
-        self.console_text.moveCursor(QTextCursor.End)
-        
     def new_project(self):
+        """Create a new project"""
         dialog = NewProjectDialog(self)
         if dialog.exec_() == QDialog.Accepted:
             self.load_projects()
@@ -1340,6 +1739,22 @@ class TransHub(QWidget):
                 self.projects_table.setItem(i, 3, status_item)
                 self.projects_table.setItem(i, 4, QTableWidgetItem("0%"))
                 
+    def on_project_selected(self):
+        """Handle project selection in the table"""
+        selected_items = self.projects_table.selectedItems()
+        if selected_items:
+            self.selected_project_row = selected_items[0].row()
+            # Enable process button if project is unprocessed or paused
+            project = self.projects[self.selected_project_row]
+            status = project['data'].get('status', 'unknown')
+            self.process_btn.setEnabled(status in ['unprocessed', 'pending', 'paused'])
+            # Enable import to analysis button if project is completed
+            self.import_analysis_btn.setEnabled(status == 'completed')
+        else:
+            self.selected_project_row = -1
+            self.process_btn.setEnabled(False)
+            self.import_analysis_btn.setEnabled(False)
+            
     def process_project(self):
         """Process the selected project through the workflow"""
         if self.selected_project_row == -1:
@@ -1387,19 +1802,53 @@ class TransHub(QWidget):
             self.process_thread.is_running = False
             self.process_thread.terminate()
             self.process_thread.wait()
-            self.on_process_finished("Processing stopped")
+            self.add_console_message("Processing stopped by user", "info")
+        
+    def import_to_analysis(self):
+        """Import selected project to analysis tab"""
+        if self.selected_project_row == -1:
+            return
             
+        project = self.projects[self.selected_project_row]
+        project_data = project['data']
+        project_path = project['path']
+        
+        # Load analysis data
+        if self.load_analysis_data(project_path):
+            self.tab_widget.setCurrentIndex(1)
+            QMessageBox.information(self, "Success", "Project data imported successfully!")
+            
+    def clear_console(self):
+        """Clear console text"""
+        self.console_text.clear()
+        
+    def add_console_message(self, message, msg_type="info"):
+        """Add message to console"""
+        timestamp = pd.Timestamp.now().strftime("%H:%M:%S")
+        if msg_type == "command":
+            formatted = f"[{timestamp}] $ {message}"
+        elif msg_type == "error":
+            formatted = f"[{timestamp}] ERROR: {message}"
+        elif msg_type == "warning":
+            formatted = f"[{timestamp}] WARNING: {message}"
+        else:
+            formatted = f"[{timestamp}] {message}"
+            
+        self.console_text.append(formatted)
+        self.console_text.moveCursor(QTextCursor.End)
+        
     def on_progress(self, message):
         """Handle progress updates"""
-        self.add_console_message(f"Progress: {message}", "info")
-        self.progress_bar.setFormat(f"Processing: {message}")
+        self.add_console_message(message, "info")
         
     def on_process_finished(self, message):
         """Handle process completion"""
         self.process_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
+        
         self.add_console_message(f"Processing completed: {message}", "info")
+        QMessageBox.information(self, "Success", "Processing completed successfully!")
         
         if self.selected_project_row >= 0:
             # Update status to completed
@@ -1421,7 +1870,7 @@ class TransHub(QWidget):
         self.process_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
-        self.add_console_message(f"Processing failed: {error_msg}", "error")
+        self.add_console_message(f"处理失败: {error_msg}", "error")
         
         if self.selected_project_row >= 0:
             # Update status to error
@@ -1458,51 +1907,108 @@ class TransHub(QWidget):
         if self.load_analysis_data(project_path):
             # Switch to analysis tab
             self.tab_widget.setCurrentIndex(1)  # Analysis tab
-            QMessageBox.information(self, "Success", f"Project '{project_data['name']}' imported to analysis area")
+            QMessageBox.information(self, "成功", f"项目 '{project_data['name']}' 已导入至分析区")
             
-    def load_analysis_data(self, project_path):
+    def load_analysis_data(self, project_path, exptype='tpm'):
         """Load analysis data for visualization"""
         try:
+        # if True:
             # Look for results files
             results_dir = os.path.join(project_path, f"{os.path.basename(project_path)}_results")
             
-            # Try to load deseq2 results first - prefer filtered results
+            # Load expression level data (TPM/FPKM files)
+            expression_files = []
+            if os.path.exists(results_dir):
+                for file in os.listdir(results_dir):
+                    if ((file.endswith("_tpm.txt") or file.endswith("_fpkm.txt") or 
+                        file.endswith("_tpm_filtered.txt") or file.endswith("_fpkm_filtered.txt"))):
+                        expression_files.append(os.path.join(results_dir, file))
+            
+
+            # Load differential analysis data (DESeq2 results)
             deseq2_filtered_file = os.path.join(results_dir, "deseq2_results_filtered.txt")
             deseq2_file = os.path.join(results_dir, "deseq2_results.txt")
+            
+            # Load count data as fallback
             count_file = os.path.join(results_dir, "counts.txt")
-            
-            data_file = None
+
+            # Load expression data (prefer filtered versions)
+            expression_data_file = None
+            for file in expression_files:
+                if exptype in file and "filtered" in file:
+                    expression_data_file = file
+                    break
+                
+            if not expression_data_file and os.path.exists(count_file):
+                expression_data_file = count_file
+                
+            # Load differential data (prefer filtered DESeq2 results)
+            differential_data_file = None
             if os.path.exists(deseq2_filtered_file):
-                data_file = deseq2_filtered_file
+                differential_data_file = deseq2_filtered_file
             elif os.path.exists(deseq2_file):
-                data_file = deseq2_file
+                differential_data_file = deseq2_file
             elif os.path.exists(count_file):
-                data_file = count_file
-            else:
-                # Look for any txt file in results directory
-                for file in os.listdir(results_dir):
-                    if file.endswith(".txt"):
-                        data_file = os.path.join(results_dir, file)
-                        break
+                differential_data_file = count_file
+                
+            # Load expression data if available
+            if expression_data_file and os.path.exists(expression_data_file):
+                try:
+                # if True:
+                    with open(count_file, 'r', encoding='utf-8', errors='ignore') as f:
+                        lines = f.readlines()
             
-            if not data_file or not os.path.exists(data_file):
+                    # Find the header line (starts with Geneid)
+                    header_idx = 0
+                    for i, line in enumerate(lines):
+                        if line.startswith("Geneid"):
+                            header_idx = i
+                            break
+                    expression_df = pd.read_csv(expression_data_file, sep='\t', skiprows=header_idx)
+                    self.current_expression_data = expression_df
+                    self.update_expression_table(expression_df)
+                    
+                    # Update filter widget with column names
+                    self.expression_filter_widget.column_combo.clear()
+                    self.expression_filter_widget.column_combo.addItems(expression_df.columns.tolist())
+                    
+                    # Clear any existing filter conditions
+                    self.clear_expression_filter_conditions()
+                except Exception as e:
+                    QMessageBox.warning(self, "Warning", f"Failed to load expression data: {str(e)}")
+            else:
+                # Clear expression table
+                self.expression_table.setRowCount(0)
+                self.expression_table.setColumnCount(0)
+                self.current_expression_data = None
+            
+            # Load differential data if available
+            if differential_data_file and os.path.exists(differential_data_file):
+                try:
+                    differential_df = pd.read_csv(differential_data_file, sep='\t')
+                    self.current_differential_data = differential_df
+                    self.update_differential_table(differential_df)
+                    
+                    # Update filter widget with column names
+                    self.differential_filter_widget.column_combo.clear()
+                    self.differential_filter_widget.column_combo.addItems(differential_df.columns.tolist())
+                    
+                    # Clear any existing filter conditions
+                    self.clear_differential_filter_conditions()
+                except Exception as e:
+                    QMessageBox.warning(self, "Warning", f"Failed to load differential data: {str(e)}")
+            else:
+                # Clear differential table
+                self.differential_table.setRowCount(0)
+                self.differential_table.setColumnCount(0)
+                self.current_differential_data = None
+                
+            # If neither data type is available, show warning
+            if not (expression_data_file and os.path.exists(expression_data_file)) and \
+               not (differential_data_file and os.path.exists(differential_data_file)):
                 QMessageBox.warning(self, "Warning", "No analyzable data file found")
                 return False
                 
-            # Load data
-            df = pd.read_csv(data_file, sep='\t')
-            self.current_data = df
-            
-            # Update data table
-            self.update_data_table(df)
-            
-            # Update filter widget with column names
-            self.filter_widget.column_combo.clear()
-            self.filter_widget.column_combo.addItems(df.columns.tolist())
-            
-            # Clear any existing filter conditions
-            self.clear_filter_conditions()
-            
             return True
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to load analysis data: {str(e)}")
