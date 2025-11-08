@@ -3,8 +3,6 @@ TransHub: Transcriptome Data Management and Analysis Tool
 Manages transcriptome projects and datasets with visualization capabilities
 """
 
-# TODO: add input portal for GXF annotation
-
 import os
 import json
 import pandas as pd
@@ -18,7 +16,14 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTa
                              QHeaderView, QApplication, QCheckBox, QDoubleSpinBox, QFrame,
                              QTextEdit, QSpinBox, QProgressBar, QSplitter)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5.QtGui import QFont, QTextCursor, QIcon
+
+# config PATH for Git
+plugin_path = os.path.dirname(os.path.abspath(__file__))
+git_path = os.path.join(plugin_path, "bin/git/cmd")
+os.environ["PATH"] = f"{git_path};{os.environ['PATH']}"
+git_bash_path = os.path.join(plugin_path, "bin/git/bin")
+os.environ["PATH"] = f"{git_bash_path};{os.environ['PATH']}"
 
 
 class AddFastqDialog(QDialog):
@@ -181,6 +186,190 @@ class SampleDesignDialog(QDialog):
                 })
                 
         super().accept()
+
+
+class CommitDialog(QDialog):
+    """Dialog for entering commit message"""
+    
+    def __init__(self, parent=None, title="Commit to History", default_message=""):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.resize(500, 150)
+        
+        self.commit_message = ""
+        self.branch_name = ""
+        self.create_new_branch = False
+        
+        self.setup_ui(default_message)
+        
+    def setup_ui(self, default_message):
+        layout = QVBoxLayout()
+        
+        # Commit message
+        layout.addWidget(QLabel("Commit Message:"))
+        self.message_edit = QTextEdit()
+        self.message_edit.setMaximumHeight(100)
+        self.message_edit.setPlainText(default_message)
+        layout.addWidget(self.message_edit)
+        
+        # Branch name (only for new branch option)
+        self.branch_layout = QHBoxLayout()
+        self.branch_layout.addWidget(QLabel("New Branch Name:"))
+        self.branch_edit = QLineEdit()
+        self.branch_layout.addWidget(self.branch_edit)
+        self.branch_layout_widget = QWidget()
+        self.branch_layout_widget.setLayout(self.branch_layout)
+        self.branch_layout_widget.setVisible(False)
+        layout.addWidget(self.branch_layout_widget)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+        button_layout.addStretch()
+        button_layout.addWidget(ok_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+        
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        
+        self.setLayout(layout)
+        
+    def set_create_new_branch(self, create_new):
+        self.create_new_branch = create_new
+        self.branch_layout_widget.setVisible(create_new)
+        if create_new:
+            self.setWindowTitle("Commit & Create New Branch")
+        else:
+            self.setWindowTitle("Commit to History")
+
+
+class RemoteConfigDialog(QDialog):
+    """Dialog for configuring remote repository and SSH keys"""
+    
+    def __init__(self, parent=None, current_remote_url=""):
+        super().__init__(parent)
+        self.setWindowTitle("Configure Remote Repository")
+        self.setModal(True)
+        self.resize(600, 400)
+        
+        self.current_remote_url = current_remote_url
+        self.ssh_key_generated = False
+        
+        self.setup_ui()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout()
+        
+        # Remote URL section
+        layout.addWidget(QLabel("Remote Repository URL:"))
+        self.remote_url_edit = QLineEdit()
+        self.remote_url_edit.setPlaceholderText("e.g., https://github.com/user/repo.git or git@github.com:user/repo.git")
+        self.remote_url_edit.setText(self.current_remote_url)
+        layout.addWidget(self.remote_url_edit)
+        
+        # SSH Key section
+        ssh_group = QGroupBox("SSH Key Configuration")
+        ssh_layout = QVBoxLayout()
+        ssh_group.setLayout(ssh_layout)
+        
+        ssh_info = QLabel("Generate SSH key for secure communication with remote repository:")
+        ssh_info.setWordWrap(True)
+        ssh_layout.addWidget(ssh_info)
+        
+        self.generate_key_btn = QPushButton("Generate SSH Key Pair")
+        self.generate_key_btn.clicked.connect(self.generate_ssh_key)
+        ssh_layout.addWidget(self.generate_key_btn)
+        
+        ssh_layout.addWidget(QLabel("Public Key (add this to your GitHub/GitLab account):"))
+        self.public_key_text = QTextEdit()
+        self.public_key_text.setReadOnly(True)
+        self.public_key_text.setMaximumHeight(100)
+        ssh_layout.addWidget(self.public_key_text)
+        
+        layout.addWidget(ssh_group)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        ok_btn = QPushButton("Save Configuration")
+        cancel_btn = QPushButton("Cancel")
+        button_layout.addStretch()
+        button_layout.addWidget(ok_btn)
+        button_layout.addWidget(cancel_btn)
+        layout.addLayout(button_layout)
+        
+        ok_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        
+        self.setLayout(layout)
+        
+    def generate_ssh_key(self):
+        """Generate SSH key pair for Git operations"""
+        try:
+            # Create .ssh directory if it doesn't exist
+            ssh_dir = os.path.expanduser("~/.ssh")
+            os.makedirs(ssh_dir, exist_ok=True)
+            
+            # Key file paths
+            key_path = os.path.join(ssh_dir, "yrtools_transhub")
+            private_key_path = key_path
+            public_key_path = key_path + ".pub"
+            
+            # Check if keys already exist
+            if os.path.exists(private_key_path) and os.path.exists(public_key_path):
+                reply = QMessageBox.question(
+                    self, 
+                    "SSH Key Exists", 
+                    "SSH key pair already exists. Do you want to regenerate it?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+                
+                if reply == QMessageBox.No:
+                    # Load existing public key
+                    with open(public_key_path, 'r') as f:
+                        public_key = f.read()
+                    self.public_key_text.setPlainText(public_key)
+                    self.ssh_key_generated = True
+                    QMessageBox.information(self, "Success", "Existing SSH key loaded.")
+                    return
+            
+            # Generate SSH key pair using ssh-keygen
+            # Use subprocess to run ssh-keygen
+            result = subprocess.run([
+                "ssh-keygen", 
+                "-t", "rsa", 
+                "-b", "4096", 
+                "-f", key_path,
+                "-N", ""  # No passphrase
+            ], capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                # Read the public key
+                with open(public_key_path, 'r') as f:
+                    public_key = f.read()
+                
+                self.public_key_text.setPlainText(public_key)
+                self.ssh_key_generated = True
+                QMessageBox.information(
+                    self, 
+                    "Success", 
+                    "SSH key pair generated successfully!\n\n"
+                    "Please add the public key to your GitHub/GitLab account:\n"
+                    "1. Copy the public key above\n"
+                    "2. Go to GitHub/GitLab Settings -> SSH Keys\n"
+                    "3. Add the public key with a title like 'YRTools TransHub'"
+                )
+            else:
+                QMessageBox.critical(
+                    self, 
+                    "Error", 
+                    f"Failed to generate SSH key:\n{result.stderr}"
+                )
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to generate SSH key: {str(e)}")
 
 
 class NewProjectDialog(QDialog):
@@ -407,6 +596,12 @@ class NewProjectDialog(QDialog):
         project_path = Path(self.workspace_path) / self.project_name
         project_path.mkdir(parents=True, exist_ok=True)
         
+        # Initialize Git repository
+        try:
+            subprocess.run(["git", "init"], cwd=project_path, check=True, capture_output=True)
+        except subprocess.CalledProcessError:
+            pass  # Ignore Git errors for now
+        
         # Create results directory
         results_path = project_path / f"{self.project_name}_results"
         results_path.mkdir(exist_ok=True)
@@ -502,6 +697,9 @@ class ProcessThread(QThread):
                 # Update checkpoint
                 checkpoint["pydeseq2_analysis"] = True
                 self.save_checkpoint(checkpoint)
+                
+            # Create gitignore and commit results
+            self.create_gitignore_and_commit()
                 
             self.finished.emit("Analysis workflow completed")
         except Exception as e:
@@ -778,6 +976,9 @@ class ProcessThread(QThread):
             tpm = rpk.div(rpk.sum(axis=0) / 1e6, axis=1)
             tpm_df = tpm.copy()
             tpm_df.insert(0, "Geneid", valid_genes)
+
+            # remove Chr / Start / End / Strand Columns
+            tpm_df = tpm_df.drop(columns=['Chr', 'Start', 'End', 'Strand'])
             
             # Save TPM
             tpm_file = os.path.join(results_dir, "counts_tpm.txt")
@@ -795,6 +996,9 @@ class ProcessThread(QThread):
             fpkm = rpk.div(total_counts / 1e6, axis=1)
             fpkm_df = fpkm.copy()
             fpkm_df.insert(0, "Geneid", valid_genes)
+
+            # remove Chr / Start / End / Strand Columns
+            fpkm_df = fpkm_df.drop(columns=['Chr', 'Start', 'End', 'Strand'])
             
             # Save FPKM
             fpkm_file = os.path.join(results_dir, "counts_fpkm.txt")
@@ -1090,6 +1294,45 @@ class ProcessThread(QThread):
             import traceback
             self.error.emit(f"Error during PyDESeq2 analysis: {str(e)}\n{traceback.format_exc()}")
             return False
+            
+    def create_gitignore_and_commit(self):
+        """Create .gitignore file and commit results to Git"""
+        try:
+            results_dir = os.path.join(self.project_path, f"{self.project_data['name']}_results")
+            
+            # Create .gitignore file
+            gitignore_content = """# Ignore everything
+*
+
+# But not directories (so empty dirs are tracked, but files in them are still ignored by *)
+!*/
+
+# But track key result files
+!counts_tpm_filtered.txt
+!counts_fpkm_filtered.txt
+!deseq2_results_filtered.txt
+"""
+            
+            gitignore_path = os.path.join(self.project_path, ".gitignore")
+            with open(gitignore_path, 'w', encoding='utf-8') as f:
+                f.write(gitignore_content)
+                
+            # Try to add and commit with Git
+            try:
+                # Add all files
+                subprocess.run(["git", "add", "."], cwd=self.project_path, check=True, capture_output=True)
+                
+                # Commit
+                subprocess.run(
+                    ["git", "commit", "-m", "Initial commit: project configuration and analysis results"], 
+                    cwd=self.project_path, 
+                    check=True, 
+                    capture_output=True
+                )
+            except subprocess.CalledProcessError:
+                pass  # Ignore Git errors for now
+        except Exception as e:
+            self.console_output.emit(f"Failed to create .gitignore or commit: {str(e)}", "warning")
 
 
 class TransHub(QWidget):
@@ -1261,6 +1504,30 @@ class TransHub(QWidget):
         self.expression_filter_conditions_container.setVisible(False)
         right_layout.addWidget(self.expression_filter_conditions_container)
         
+        # Git history controls
+        git_group = QGroupBox("Version Control")
+        git_layout = QVBoxLayout()
+        git_group.setLayout(git_layout)
+        
+        self.commit_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "commit.svg"))
+        self.branch_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "branch.svg"))
+        self.git_icon    = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "git.svg"))
+
+        self.commit_btn = QPushButton("Commit to History")
+        self.commit_btn.clicked.connect(self.commit_to_history)
+        self.commit_btn.setIcon(self.commit_icon)
+        self.commit_new_branch_btn = QPushButton("Commit && New Branch")
+        self.commit_new_branch_btn.clicked.connect(self.commit_and_new_branch)
+        self.commit_new_branch_btn.setIcon(self.branch_icon)
+        self.manage_history_btn = QPushButton("Manage History")
+        self.manage_history_btn.clicked.connect(self.manage_history)
+        self.manage_history_btn.setIcon(self.git_icon)
+        
+        git_layout.addWidget(self.commit_btn)
+        git_layout.addWidget(self.commit_new_branch_btn)
+        git_layout.addWidget(self.manage_history_btn)
+        
+        right_layout.addWidget(git_group)
         right_layout.addStretch()
         splitter.addWidget(right_widget)
         
@@ -1323,6 +1590,26 @@ class TransHub(QWidget):
         self.differential_filter_conditions_container.setVisible(False)
         right_layout.addWidget(self.differential_filter_conditions_container)
         
+        # Git history controls
+        git_group = QGroupBox("Version Control")
+        git_layout = QVBoxLayout()
+        git_group.setLayout(git_layout)
+        
+        self.commit_btn2 = QPushButton("Commit to History")
+        self.commit_btn2.clicked.connect(self.commit_to_history)
+        self.commit_btn2.setIcon(self.commit_icon)
+        self.commit_new_branch_btn2 = QPushButton("Commit && New Branch")
+        self.commit_new_branch_btn2.clicked.connect(self.commit_and_new_branch)
+        self.commit_new_branch_btn2.setIcon(self.branch_icon)
+        self.manage_history_btn2 = QPushButton("Manage History")
+        self.manage_history_btn2.clicked.connect(self.manage_history)
+        self.manage_history_btn2.setIcon(self.git_icon)
+        
+        git_layout.addWidget(self.commit_btn2)
+        git_layout.addWidget(self.commit_new_branch_btn2)
+        git_layout.addWidget(self.manage_history_btn2)
+        
+        right_layout.addWidget(git_group)
         right_layout.addStretch()
         splitter.addWidget(right_widget)
         
@@ -1623,9 +1910,15 @@ class TransHub(QWidget):
         
         for i, row in data.iterrows():
             for j, (col, val) in enumerate(row.items()):
-                item = QTableWidgetItem(str(val))
-                if isinstance(val, (int, float)):
+                # Format numeric values to 2 decimal places
+                if isinstance(val, (int, float)) and not pd.isna(val):
+                    formatted_val = f"{val:.2f}"
+                    item = QTableWidgetItem(formatted_val)
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                else:
+                    item = QTableWidgetItem(str(val))
+                    if isinstance(val, (int, float)):
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.expression_table.setItem(i, j, item)
                 
         self.expression_table.resizeColumnsToContents()
@@ -1638,9 +1931,15 @@ class TransHub(QWidget):
         
         for i, row in data.iterrows():
             for j, (col, val) in enumerate(row.items()):
-                item = QTableWidgetItem(str(val))
-                if isinstance(val, (int, float)):
+                # Format numeric values to 2 decimal places
+                if isinstance(val, (int, float)) and not pd.isna(val):
+                    formatted_val = f"{val:.2f}"
+                    item = QTableWidgetItem(formatted_val)
                     item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+                else:
+                    item = QTableWidgetItem(str(val))
+                    if isinstance(val, (int, float)):
+                        item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
                 self.differential_table.setItem(i, j, item)
                 
         self.differential_table.resizeColumnsToContents()
@@ -1870,7 +2169,7 @@ class TransHub(QWidget):
         self.process_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.progress_bar.setVisible(False)
-        self.add_console_message(f"处理失败: {error_msg}", "error")
+        self.add_console_message(f"Processing failed: {error_msg}", "error")
         
         if self.selected_project_row >= 0:
             # Update status to error
@@ -1907,7 +2206,7 @@ class TransHub(QWidget):
         if self.load_analysis_data(project_path):
             # Switch to analysis tab
             self.tab_widget.setCurrentIndex(1)  # Analysis tab
-            QMessageBox.information(self, "成功", f"项目 '{project_data['name']}' 已导入至分析区")
+            QMessageBox.information(self, "Success", f"Project '{project_data['name']}' imported to analysis area")
             
     def load_analysis_data(self, project_path, exptype='tpm'):
         """Load analysis data for visualization"""
@@ -2017,15 +2316,123 @@ class TransHub(QWidget):
     def export_data(self):
         """Export filtered data to CSV"""
         if self.current_data is not None:
-            path, _ = QFileDialog.getSaveFileName(self, "导出数据", "", "CSV Files (*.csv)")
+            path, _ = QFileDialog.getSaveFileName(self, "Export Data", "", "CSV Files (*.csv)")
             if path:
                 self.current_data.to_csv(path, index=False)
-                QMessageBox.information(self, "成功", f"数据已导出到: {path}")
+                QMessageBox.information(self, "Success", f"Data exported to: {path}")
                 
     def reset_filter(self):
         """Reset all filters"""
         # Implementation would reset filters and show all data
         pass
+        
+    def commit_to_history(self):
+        """Commit current state to Git history"""
+        dialog = CommitDialog(self, "Commit to History", "Analysis results update")
+        dialog.set_create_new_branch(False)
+        if dialog.exec_() == QDialog.Accepted:
+            commit_message = dialog.message_edit.toPlainText().strip()
+            if not commit_message:
+                QMessageBox.warning(self, "Warning", "Please enter a commit message")
+                return
+                
+            # Get current project path
+            if self.selected_project_row >= 0:
+                project = self.projects[self.selected_project_row]
+                project_path = project['path']
+                
+                try:
+                    # Stage all changes
+                    subprocess.run(["git", "add", "."], cwd=project_path, check=True, capture_output=True)
+                    
+                    # Commit
+                    subprocess.run(
+                        ["git", "commit", "-m", commit_message], 
+                        cwd=project_path, 
+                        check=True, 
+                        capture_output=True
+                    )
+                    
+                    QMessageBox.information(self, "Success", "Changes committed successfully!")
+                except subprocess.CalledProcessError as e:
+                    QMessageBox.critical(self, "Error", f"Failed to commit changes: {e}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+            else:
+                QMessageBox.warning(self, "Warning", "No project selected")
+                
+    def commit_and_new_branch(self):
+        """Commit current state and create a new branch"""
+        dialog = CommitDialog(self, "Commit & Create New Branch", "Analysis results update")
+        dialog.set_create_new_branch(True)
+        if dialog.exec_() == QDialog.Accepted:
+            commit_message = dialog.message_edit.toPlainText().strip()
+            branch_name = dialog.branch_edit.text().strip()
+            
+            if not commit_message:
+                QMessageBox.warning(self, "Warning", "Please enter a commit message")
+                return
+                
+            if not branch_name:
+                QMessageBox.warning(self, "Warning", "Please enter a branch name")
+                return
+                
+            # Get current project path
+            if self.selected_project_row >= 0:
+                project = self.projects[self.selected_project_row]
+                project_path = project['path']
+                
+                try:
+                    # Stage all changes
+                    subprocess.run(["git", "add", "."], cwd=project_path, check=True, capture_output=True)
+                    
+                    # Create and switch to new branch
+                    subprocess.run(
+                        ["git", "checkout", "-b", branch_name], 
+                        cwd=project_path, 
+                        check=True, 
+                        capture_output=True
+                    )
+                    
+                    # Commit
+                    subprocess.run(
+                        ["git", "commit", "-m", commit_message], 
+                        cwd=project_path, 
+                        check=True, 
+                        capture_output=True
+                    )
+                    
+                    QMessageBox.information(self, "Success", f"Changes committed and new branch '{branch_name}' created!")
+                except subprocess.CalledProcessError as e:
+                    QMessageBox.critical(self, "Error", f"Failed to commit and create branch: {e}")
+                except Exception as e:
+                    QMessageBox.critical(self, "Error", f"An error occurred: {str(e)}")
+            else:
+                QMessageBox.warning(self, "Warning", "No project selected")
+                
+    def manage_history(self):
+        """Open Git GUI to manage history"""
+        # Get current project path
+        if self.selected_project_row >= 0:
+            project = self.projects[self.selected_project_row]
+            project_path = project['path']
+
+            # get the absolute path
+            project_path_abs = os.path.abspath(project_path)
+            
+            try:
+                # Try to run gitk
+                cwd = os.getcwd()
+                os.chdir(project_path_abs)
+                # subprocess.Popen(["gitk"], cwd=project_path)
+                subprocess.Popen("gitk .")
+                os.chdir(cwd)
+            except FileNotFoundError:
+                QMessageBox.critical(self, "Error", "Git GUI (gitk) not found. Please ensure Git is properly installed.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to open Git GUI: {str(e)}")
+        else:
+            QMessageBox.warning(self, "Warning", "No project selected")
 
 
 # Plugin entry point
