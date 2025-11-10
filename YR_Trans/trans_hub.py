@@ -14,10 +14,12 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QTa
                              QTableWidgetItem, QTabWidget, QDialog, QFormLayout, QLineEdit,
                              QFileDialog, QMessageBox, QLabel, QComboBox, QGroupBox,
                              QHeaderView, QApplication, QCheckBox, QDoubleSpinBox, QFrame,
-                             QTextEdit, QSpinBox, QProgressBar, QSplitter)
+                             QTextEdit, QSpinBox, QProgressBar, QSplitter, QGridLayout, QAction, QSizePolicy,
+                             QToolButton)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QFont, QTextCursor, QIcon
 from .lg_transhub import *
+from .lg_transhubviz import *
 
 # config PATH for Git
 plugin_path = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +40,7 @@ class TransHub(QWidget):
         self.current_data = None
         self.selected_project_row = -1
         self.process_thread = None
+        self.project_path = None
         
         self.init_ui()
         self.load_projects()
@@ -47,7 +50,7 @@ class TransHub(QWidget):
         self.setLayout(main_layout)
         
         # Title
-        title_label = QLabel("Transcriptome Data Hub")
+        title_label = QLabel("YR Transcriptome Hub")
         title_font = QFont()
         title_font.setPointSize(16)
         title_font.setBold(True)
@@ -162,10 +165,17 @@ class TransHub(QWidget):
         filter_layout = QVBoxLayout()
         filter_group.setLayout(filter_layout)
         
+        # Set spacing to minimum
+        filter_layout.setSpacing(2)
+        filter_layout.setContentsMargins(5, 5, 5, 5)
+        
         self.expression_filter_widget = FilterWidget()
         filter_layout.addWidget(self.expression_filter_widget)
         
         filter_button_layout = QHBoxLayout()
+        filter_button_layout.setSpacing(2)
+        filter_button_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.add_expression_filter_btn = QPushButton("Add Condition")
         self.add_expression_filter_btn.clicked.connect(self.add_expression_filter_condition)
         self.clear_expression_filter_btn = QPushButton("Clear Conditions")
@@ -195,54 +205,96 @@ class TransHub(QWidget):
         self.expression_filter_conditions_container.setVisible(False)
         right_layout.addWidget(self.expression_filter_conditions_container)
         
-        # Git history controls
-        git_group = QGroupBox("Version Control")
-        git_layout = QVBoxLayout()
-        git_group.setLayout(git_layout)
+        # Add separator line
+        separator_line1 = QFrame()
+        separator_line1.setFrameShape(QFrame.HLine)
+        separator_line1.setFrameShadow(QFrame.Sunken)
+        right_layout.addWidget(separator_line1)
         
+        # History control label
+        history_label = QLabel("History Control (based on Git):")
+        history_label.setStyleSheet("font-weight: bold;")
+        right_layout.addWidget(history_label)
+        
+        # History control buttons
         self.commit_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "commit.svg"))
         self.branch_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "branch.svg"))
         self.git_icon    = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "git.svg"))
+        self.remote_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "remote.svg"))
+        self.back_icon   = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "scrollback.svg"))
+        self.sync_icon   = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "sync.svg"))
 
-        self.commit_btn = QPushButton("Commit to History")
-        self.commit_btn.clicked.connect(self.commit_to_history)
-        self.commit_btn.setIcon(self.commit_icon)
-        self.commit_new_branch_btn = QPushButton("Commit && New Branch")
-        self.commit_new_branch_btn.clicked.connect(self.commit_and_new_branch)
-        self.commit_new_branch_btn.setIcon(self.branch_icon)
-        self.manage_history_btn = QPushButton("Manage History")
-        self.manage_history_btn.clicked.connect(self.manage_history)
-        self.manage_history_btn.setIcon(self.git_icon)
-        
-        # New collaboration buttons
-        self.rollback_btn = QPushButton("Scroll Back to Last History")
-        self.rollback_btn.clicked.connect(self.rollback_to_last_commit)
+        self.commit_btn2 = QPushButton("Commit to History")
+        self.commit_btn2.clicked.connect(self.commit_to_history)
+        self.commit_btn2.setIcon(self.commit_icon)
+        self.commit_new_branch_btn2 = QPushButton("Commit && New Branch")
+        self.commit_new_branch_btn2.clicked.connect(self.commit_and_new_branch)
+        self.commit_new_branch_btn2.setIcon(self.branch_icon)
+        self.manage_history_btn2 = QPushButton("Manage History")
+        self.manage_history_btn2.clicked.connect(self.manage_history)
+        self.manage_history_btn2.setIcon(self.git_icon)
+        self.rollback_btn2 = QPushButton("Scroll Back to Last History")
+        self.rollback_btn2.clicked.connect(self.rollback_to_last_commit)
+        self.rollback_btn2.setIcon(self.back_icon)
         
         # Separator line
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         
-        self.configure_remote_btn = QPushButton("Configure Remote Repository")
-        self.configure_remote_btn.clicked.connect(self.configure_remote_repository)
+        self.configure_remote_btn2 = QPushButton("Configure Remote Repository")
+        self.configure_remote_btn2.clicked.connect(self.configure_remote_repository)
+        self.configure_remote_btn2.setIcon(self.remote_icon)
+
+        self.sync_btn2 = QPushButton("Sync to Remote")
+        self.sync_btn2.clicked.connect(self.sync_with_remote)
+        self.sync_btn2.setIcon(self.sync_icon)
         
-        self.sync_btn = QPushButton("Sync to Remote")
-        self.sync_btn.clicked.connect(self.sync_with_remote)
+        right_layout.addWidget(self.commit_btn2)
+        right_layout.addWidget(self.commit_new_branch_btn2)
+        right_layout.addWidget(self.manage_history_btn2)
+        right_layout.addWidget(self.rollback_btn2)
+        right_layout.addWidget(separator)
+        right_layout.addWidget(self.configure_remote_btn2)
+        right_layout.addWidget(self.sync_btn2)
         
-        git_layout.addWidget(self.commit_btn)
-        git_layout.addWidget(self.commit_new_branch_btn)
-        git_layout.addWidget(self.manage_history_btn)
-        git_layout.addWidget(self.rollback_btn)
-        git_layout.addWidget(separator)
-        git_layout.addWidget(self.configure_remote_btn)
-        git_layout.addWidget(self.sync_btn)
+        # Add separator line
+        separator_line2 = QFrame()
+        separator_line2.setFrameShape(QFrame.HLine)
+        separator_line2.setFrameShadow(QFrame.Sunken)
+        right_layout.addWidget(separator_line2)
         
-        right_layout.addWidget(git_group)
+        # Visualization label
+        visualization_label = QLabel("Visualization:")
+        visualization_label.setStyleSheet("font-weight: bold;")
+        right_layout.addWidget(visualization_label)
+        
+        # Create a grid layout for actions (3 columns)
+        action_layout = QGridLayout()
+        action_layout.setSpacing(2)
+        action_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Heatmap action for expression analysis
+        # if hasattr(self, 'expression_tab') and self.expression_tab == self.sender().parent():
+        self.heatmap_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "heatmap.svg"))
+        self.heatmap_button = QToolButton()
+        self.heatmap_button.setText("Heatmap")
+        self.heatmap_button.setIcon(self.heatmap_icon)
+        self.heatmap_button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        action_layout.addWidget(self.heatmap_button, 0, 0)
+
+            # heatmap_btn = QPushButton(self.heatmap_action)
+            # heatmap_btn.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Minimum)
+            # action_layout.addWidget(heatmap_btn, 0, 1)
+        
+        plot_widget = QWidget()
+        plot_widget.setLayout(action_layout)
+        right_layout.addWidget(plot_widget)
         right_layout.addStretch()
         splitter.addWidget(right_widget)
         
         # Set splitter sizes
-        splitter.setSizes([700, 300])
+        splitter.setSizes([7,3])
         
     def setup_differential_tab(self):
         """Setup the differential analysis tab"""
@@ -267,10 +319,17 @@ class TransHub(QWidget):
         filter_layout = QVBoxLayout()
         filter_group.setLayout(filter_layout)
         
+        # Set spacing to minimum
+        filter_layout.setSpacing(2)
+        filter_layout.setContentsMargins(5, 5, 5, 5)
+        
         self.differential_filter_widget = FilterWidget()
         filter_layout.addWidget(self.differential_filter_widget)
         
         filter_button_layout = QHBoxLayout()
+        filter_button_layout.setSpacing(2)
+        filter_button_layout.setContentsMargins(0, 0, 0, 0)
+        
         self.add_differential_filter_btn = QPushButton("Add Condition")
         self.add_differential_filter_btn.clicked.connect(self.add_differential_filter_condition)
         self.clear_differential_filter_btn = QPushButton("Clear Conditions")
@@ -301,10 +360,25 @@ class TransHub(QWidget):
         right_layout.addWidget(self.differential_filter_conditions_container)
         
         # Git history controls
-        git_group = QGroupBox("Version Control")
-        git_layout = QVBoxLayout()
-        git_group.setLayout(git_layout)
+        # Add separator line
+        separator_line1 = QFrame()
+        separator_line1.setFrameShape(QFrame.HLine)
+        separator_line1.setFrameShadow(QFrame.Sunken)
+        right_layout.addWidget(separator_line1)
         
+        # History control label
+        history_label = QLabel("History Control (based on Git):")
+        history_label.setStyleSheet("font-weight: bold;")
+        right_layout.addWidget(history_label)
+        
+        # History control buttons
+        self.commit_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "commit.svg"))
+        self.branch_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "branch.svg"))
+        self.git_icon    = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "git.svg"))
+        self.remote_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "remote.svg"))
+        self.back_icon   = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "scrollback.svg"))
+        self.sync_icon   = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "sync.svg"))
+
         self.commit_btn2 = QPushButton("Commit to History")
         self.commit_btn2.clicked.connect(self.commit_to_history)
         self.commit_btn2.setIcon(self.commit_icon)
@@ -314,10 +388,9 @@ class TransHub(QWidget):
         self.manage_history_btn2 = QPushButton("Manage History")
         self.manage_history_btn2.clicked.connect(self.manage_history)
         self.manage_history_btn2.setIcon(self.git_icon)
-        
-        # New collaboration buttons
         self.rollback_btn2 = QPushButton("Scroll Back to Last History")
         self.rollback_btn2.clicked.connect(self.rollback_to_last_commit)
+        self.rollback_btn2.setIcon(self.back_icon)
         
         # Separator line
         separator2 = QFrame()
@@ -326,25 +399,101 @@ class TransHub(QWidget):
         
         self.configure_remote_btn2 = QPushButton("Configure Remote Repository")
         self.configure_remote_btn2.clicked.connect(self.configure_remote_repository)
-        
+        self.configure_remote_btn2.setIcon(self.remote_icon)
         self.sync_btn2 = QPushButton("Sync to Remote")
         self.sync_btn2.clicked.connect(self.sync_with_remote)
+        self.sync_btn2.setIcon(self.sync_icon)
         
-        git_layout.addWidget(self.commit_btn2)
-        git_layout.addWidget(self.commit_new_branch_btn2)
-        git_layout.addWidget(self.manage_history_btn2)
-        git_layout.addWidget(self.rollback_btn2)
-        git_layout.addWidget(separator2)
-        git_layout.addWidget(self.configure_remote_btn2)
-        git_layout.addWidget(self.sync_btn2)
+        right_layout.addWidget(self.commit_btn2)
+        right_layout.addWidget(self.commit_new_branch_btn2)
+        right_layout.addWidget(self.manage_history_btn2)
+        right_layout.addWidget(self.rollback_btn2)
+        right_layout.addWidget(separator2)
+        right_layout.addWidget(self.configure_remote_btn2)
+        right_layout.addWidget(self.sync_btn2)
         
-        right_layout.addWidget(git_group)
+        # Add separator line
+        separator_line2 = QFrame()
+        separator_line2.setFrameShape(QFrame.HLine)
+        separator_line2.setFrameShadow(QFrame.Sunken)
+        right_layout.addWidget(separator_line2)
+        
+        # Visualization label
+        visualization_label = QLabel("Visualization:")
+        visualization_label.setStyleSheet("font-weight: bold;")
+        right_layout.addWidget(visualization_label)
+        
+        # Plotting actions
+        # Create a grid layout for actions (3 columns)
+        action_layout = QGridLayout()
+        action_layout.setSpacing(2)
+        action_layout.setContentsMargins(5, 5, 5, 5)
+        
+        # Volcano plot for differential analysis
+        self.volcano_button = QToolButton()
+        self.volcano_button.setText("Volcano")
+        self.volcano_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "volcano.svg"))
+        self.volcano_button.setIcon(self.volcano_icon)
+        self.volcano_button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        self.volcano_button.clicked.connect(self.create_volcano_viz)
+        # self.volcano_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        action_layout.addWidget(self.volcano_button, 0, 0)
+
+        # DEGs dist plot for differential analysis
+        self.degs_button = QToolButton()
+        self.degs_button.setText("DEGs Dist")
+        self.degs_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "degs_dist.svg"))
+        self.degs_button.setIcon(self.degs_icon)
+        self.degs_button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        # self.degs_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        action_layout.addWidget(self.degs_button, 0, 1)
+
+        # GSA Enrichment plot for differential analysis
+        self.gsa_button = QToolButton()
+        self.gsa_button.setText("GSA Enrich")
+        self.gsa_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "GSA.svg"))
+        self.gsa_button.setIcon(self.gsa_icon)
+        self.gsa_button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        # self.gsa_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        action_layout.addWidget(self.gsa_button, 0, 2)
+
+        # gsea Enrichment plot for differential analysis
+        self.gsea_button = QToolButton()
+        self.gsea_button.setText("GSEA Enrich")
+        self.gsea_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "GSEA.svg"))
+        self.gsea_button.setIcon(self.gsea_icon)
+        self.gsea_button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        # self.gsea_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        action_layout.addWidget(self.gsea_button, 1, 0)
+
+        # gsea ridge plot for differential analysis
+        self.gsea_ridge_button = QToolButton()
+        self.gsea_ridge_button.setText("GSEA Ridge")
+        self.gsea_ridge_icon = QIcon(os.path.join(self.plugin_path, "YR_Trans", "src", "GSEA_ridge.svg"))
+        self.gsea_ridge_button.setIcon(self.gsea_ridge_icon)
+        self.gsea_ridge_button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+        # self.gsea_ridge_button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        action_layout.addWidget(self.gsea_ridge_button, 1, 1)
+        
+        plot_widget = QWidget()
+        plot_widget.setLayout(action_layout)
+        right_layout.addWidget(plot_widget)
         right_layout.addStretch()
         splitter.addWidget(right_widget)
         
         # Set splitter sizes
-        splitter.setSizes([700, 300])
+        splitter.setSizes([7, 3])
         
+    def create_volcano_viz(self):
+        """Create a volcano plot visualization widget."""
+        # Get current differential data
+        if hasattr(self, 'current_differential_data') and self.current_differential_data is not None:
+            # Create VizWidget with the current data
+            from .lg_transhubviz import VolcanoDialog
+            viz_dialog = VolcanoDialog(self, self.current_differential_data, self.project_path)
+            viz_dialog.exec_()
+        else:
+            QMessageBox.warning(self, "No Data", "No differential data available for visualization.")
     def add_expression_filter_condition(self):
         """Add a filter condition for expression data"""
         if not hasattr(self, 'expression_filter_conditions'):
@@ -840,6 +989,8 @@ class TransHub(QWidget):
         project = self.projects[self.selected_project_row]
         project_data = project['data']
         project_path = project['path']
+
+        self.project_path = project_path
         
         # Load analysis data
         if self.load_analysis_data(project_path):
@@ -1399,6 +1550,25 @@ class TransHub(QWidget):
         else:
             QMessageBox.warning(self, "Warning", "No project selected")
 
+    def show_volcano_plot(self):
+        """Show volcano plot for differential analysis results"""
+        if not hasattr(self, 'current_differential_data') or self.current_differential_data is None:
+            QMessageBox.warning(self, "Warning", "No differential analysis data available")
+            return
+            
+        # TODO: Implement volcano plot visualization
+        # This will require matplotlib integration
+        QMessageBox.information(self, "Info", "Volcano plot functionality will be implemented soon")
+        
+    def show_heatmap(self):
+        """Show heatmap for expression level data"""
+        if not hasattr(self, 'current_expression_data') or self.current_expression_data is None:
+            QMessageBox.warning(self, "Warning", "No expression data available")
+            return
+            
+        # TODO: Implement heatmap visualization
+        # This will require matplotlib integration
+        QMessageBox.information(self, "Info", "Heatmap functionality will be implemented soon")
 
 # Plugin entry point
 class TransHubPlugin:

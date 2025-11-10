@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="_图层_1" data-name=" 图层 1" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 45 45.7">
+  <defs>
+    <style>
+      .cls-1, .cls-2, .cls-3, .cls-4, .cls-5, .cls-6 {
+        stroke-width: 0px;
+      }
+
+      .cls-1, .cls-3, .cls-6 {
+        fill: #4e6691;
+      }
+
+      .cls-2 {
+        opacity: .3;
+      }
+
+      .cls-2, .cls-4, .cls-5 {
+        fill: #ba3e45;
+      }
+
+      .cls-3 {
+        opacity: .7;
+      }
+
+      .cls-7 {
+        fill: none;
+        stroke: #231815;
+        stroke-linecap: round;
+        stroke-miterlimit: 10;
+        stroke-width: 2px;
+      }
+
+      .cls-5, .cls-6 {
+        opacity: .6;
+      }
+    </style>
+  </defs>
+  <g>
+    <path class="cls-5" d="M9.2,10h4.9c1.2,0,2.1.9,2.1,2.1v10.8H7.1v-10.8c0-1.2.9-2.1,2.1-2.1Z"/>
+    <path class="cls-2" d="M20,16.4h4.9c1.2,0,2.1.9,2.1,2.1v4.3h-9.1v-4.3c0-1.2.9-2.1,2.1-2.1Z"/>
+    <path class="cls-4" d="M30.9,2.9h4.9c1.2,0,2.1.9,2.1,2.1v17.8h-9.1V5c0-1.2.9-2.1,2.1-2.1Z"/>
+    <path class="cls-1" d="M28.8,22.9h9.1v15c0,1-.8,1.8-1.8,1.8h-5.5c-1,0-1.8-.8-1.8-1.8v-15h0Z"/>
+    <path class="cls-3" d="M7.1,22.9h9.1v9.4c0,1-.8,1.8-1.8,1.8h-5.5c-1,0-1.8-.8-1.8-1.8v-9.4h0Z"/>
+    <path class="cls-6" d="M17.9,22.9h9.1v8.1c0,1-.8,1.8-1.8,1.8h-5.5c-1,0-1.8-.8-1.8-1.8v-8.1h0Z"/>
+  </g>
+  <line class="cls-7" x1="1.7" y1="22.9" x2="43.3" y2="22.9"/>
+</svg>
